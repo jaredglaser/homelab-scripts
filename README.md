@@ -16,6 +16,9 @@ Scans a subnet for live hosts and builds a tmux session with one SSH window per 
 
 **Dependencies:** `tmux`, `nmap`, `konsole` (or configure your own terminal), `fzf` (optional, required for the host picker keybinding)
 
+> [!NOTE]
+> Key-based SSH auth is strongly recommended. The script opens a session per host automatically, so if you rely on password auth you will need to sign in manually in every window, which defeats the purpose. If you haven't set up SSH keys yet, `ssh-copy-id user@host` is the quickest way to get there.
+
 ```bash
 cd sshl
 
