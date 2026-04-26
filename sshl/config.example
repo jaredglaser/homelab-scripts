@@ -1,0 +1,35 @@
+# sshl config
+
+# Subnet to scan for live hosts (CIDR notation)
+subnet=10.1.0.0/16
+
+# Tmux session name
+session_name=homelab
+
+# Terminal emulator to launch (KDE default)
+terminal=konsole
+
+# Default SSH username (used when no per-host override)
+default_user=root
+
+# Default commands run in each window.
+# Substitutions: {ip} {user} {hostname}
+# NOTE: the right pane must SSH too. A bare `htop` would run locally.
+# `ssh -t` allocates a pseudo-TTY which interactive TUIs like htop need.
+left_cmd=ssh {user}@{ip}
+right_cmd=ssh -t {user}@{ip} htop
+
+# Pane layout applied to each host window.
+# Options: even-horizontal | even-vertical | main-horizontal | main-vertical | tiled
+layout=even-horizontal
+
+# Per-host overrides (optional). Keys:
+#   host.<ip>.user       override SSH username
+#   host.<ip>.name       override tab name (otherwise reverse DNS, then IP)
+#   host.<ip>.left_cmd   override left-pane command for this host
+#   host.<ip>.right_cmd  override right-pane command for this host
+#
+# Examples:
+# host.192.168.1.10.user=admin
+# host.192.168.1.10.name=webserver
+# host.192.168.1.20.right_cmd=btop

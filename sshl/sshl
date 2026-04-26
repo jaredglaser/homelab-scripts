@@ -1,0 +1,320 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CONFIG_FILE="${SCRIPT_DIR}/config"
+TMUX_CONF="${SCRIPT_DIR}/homelab.tmux.conf"
+PICKER="${SCRIPT_DIR}/host-picker.sh"
+INFO_SCRIPT="${SCRIPT_DIR}/host-info.sh"
+CACHE_FILE="${SCRIPT_DIR}/ips.cache"
+SOCKET="homelab"
+TMUX_CMD=(tmux -L "$SOCKET")
+
+rescan=false
+scan_only=false
+rebuild=false
+for arg in "$@"; do
+    case "$arg" in
+        -r|--rescan)    rescan=true; rebuild=true ;;
+        -s|--scan-only) rescan=true; scan_only=true ;;
+        -R|--rebuild)   rebuild=true ;;
+        -h|--help)
+            cat <<EOF
+Usage: $(basename "$0") [options]
+  -r, --rescan     Re-scan the subnet, refresh the IP cache, and rebuild
+  -s, --scan-only  Re-scan and update the cache, then exit (no tmux)
+  -R, --rebuild    Rebuild the tmux session from the existing cache
+  -h, --help       Show this help
+
+Runs on a dedicated tmux server ('tmux -L $SOCKET'). If the session
+already exists and --rebuild is not passed, a new grouped view is
+attached (shared window list, independent focus). Run the script again
+from a second terminal to get a second view.
+EOF
+            exit 0 ;;
+        *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+    esac
+done
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    if [[ -f "${SCRIPT_DIR}/config.example" ]]; then
+        cp "${SCRIPT_DIR}/config.example" "$CONFIG_FILE" || {
+            echo "Error: failed to copy config.example to $CONFIG_FILE (check permissions and disk space)" >&2
+            exit 1
+        }
+        echo "Created config from config.example. Review $CONFIG_FILE before re-running." >&2
+    else
+        echo "Error: config file not found at $CONFIG_FILE" >&2
+    fi
+    exit 1
+fi
+
+subnet=""
+session_name="homelab"
+default_user="root"
+left_cmd='ssh {user}@{ip}'
+right_cmd='ssh -t {user}@{ip} htop'
+terminal="konsole"
+layout="even-horizontal"
+
+declare -A host_user
+declare -A host_name
+declare -A host_left_cmd
+declare -A host_right_cmd
+declare -A cached_name
+
+trim() {
+    local v="$1"
+    v="${v#"${v%%[![:space:]]*}"}"
+    v="${v%"${v##*[![:space:]]}"}"
+    printf '%s' "$v"
+}
+
+while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%%#*}"
+    line="$(trim "$line")"
+    [[ -z "$line" ]] && continue
+    [[ "$line" != *=* ]] && continue
+
+    key="$(trim "${line%%=*}")"
+    value="$(trim "${line#*=}")"
+
+    case "$key" in
+        subnet)        subnet="$value" ;;
+        session_name)  session_name="$value" ;;
+        default_user)  default_user="$value" ;;
+        left_cmd)      left_cmd="$value" ;;
+        right_cmd)     right_cmd="$value" ;;
+        terminal)      terminal="$value" ;;
+        layout)        layout="$value" ;;
+        host.*.user)       ip="${key#host.}"; host_user["${ip%.user}"]="$value" ;;
+        host.*.name)       ip="${key#host.}"; host_name["${ip%.name}"]="$value" ;;
+        host.*.left_cmd)   ip="${key#host.}"; host_left_cmd["${ip%.left_cmd}"]="$value" ;;
+        host.*.right_cmd)  ip="${key#host.}"; host_right_cmd["${ip%.right_cmd}"]="$value" ;;
+        *) echo "Warning: unknown config key '$key'" >&2 ;;
+    esac
+done < "$CONFIG_FILE"
+
+if [[ -z "$subnet" ]]; then
+    echo "Error: 'subnet' not set in $CONFIG_FILE" >&2
+    exit 1
+fi
+
+require() {
+    if ! command -v "$1" &>/dev/null; then
+        echo "Error: '$1' is required but not installed" >&2
+        exit 1
+    fi
+}
+require tmux
+
+format_age() {
+    local s=$1
+    if   (( s < 60 ));    then printf '%ds' "$s"
+    elif (( s < 3600 ));  then printf '%dm' "$((s/60))"
+    elif (( s < 86400 )); then printf '%dh' "$((s/3600))"
+    else                       printf '%dd' "$((s/86400))"
+    fi
+}
+
+read_cache() {
+    ips=()
+    [[ -f "$CACHE_FILE" ]] || return
+    while IFS=$'\t' read -r c_ip c_name || [[ -n "$c_ip" ]]; do
+        c_ip="$(trim "${c_ip%%#*}")"
+        c_name="$(trim "$c_name")"
+        [[ -z "$c_ip" ]] && continue
+        ips+=("$c_ip")
+        [[ -n "$c_name" ]] && cached_name["$c_ip"]="$c_name"
+    done < "$CACHE_FILE"
+}
+
+resolve_remote_hostname() {
+    local ip="$1"
+    local user="${host_user[$ip]:-$default_user}"
+    local name
+    name=$(ssh -o BatchMode=yes \
+               -o ConnectTimeout=3 \
+               -o StrictHostKeyChecking=accept-new \
+               -o LogLevel=ERROR \
+               "$user@$ip" hostname -s 2>/dev/null) || return 1
+    name="${name//[[:space:]]/}"
+    [[ -n "$name" ]] && printf '%s' "$name"
+}
+
+scan_subnet() {
+    require nmap
+    echo "Scanning $subnet for live hosts..."
+    local scanned
+    mapfile -t scanned < <(nmap -sn -n --min-parallelism 32 "$subnet" -oG - 2>/dev/null \
+        | awk '/Up$/{print $2}' | sort -V)
+    if [[ ${#scanned[@]} -eq 0 ]]; then
+        echo "No live hosts found in $subnet" >&2
+        exit 1
+    fi
+
+    echo "Resolving hostnames for ${#scanned[@]} host(s)..."
+    local tmp
+    tmp="$(mktemp)"
+    for ip in "${scanned[@]}"; do
+        (
+            name="${host_name[$ip]:-}"
+            if [[ -z "$name" ]]; then
+                name="$(resolve_remote_hostname "$ip" || true)"
+            fi
+            if [[ -z "$name" ]]; then
+                name="$(getent hosts "$ip" 2>/dev/null | awk '{print $2}' | head -n1)"
+                name="${name%%.*}"
+            fi
+            printf '%s\t%s\n' "$ip" "$name"
+        ) >>"$tmp" &
+    done
+    wait
+    sort -V "$tmp" >"$CACHE_FILE"
+    rm -f "$tmp"
+
+    ips=()
+    cached_name=()
+    read_cache
+    echo "Cached ${#ips[@]} host(s) to $CACHE_FILE"
+}
+
+if $rescan || [[ ! -s "$CACHE_FILE" ]]; then
+    scan_subnet
+else
+    read_cache
+    if [[ ${#ips[@]} -eq 0 ]]; then
+        echo "Cache $CACHE_FILE is empty; rescanning." >&2
+        scan_subnet
+    else
+        mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE")
+        age=$(( $(date +%s) - mtime ))
+        echo "Using ${#ips[@]} cached host(s) from $CACHE_FILE (age: $(format_age "$age"); --rescan to refresh)"
+    fi
+fi
+
+if $scan_only; then
+    exit 0
+fi
+
+resolve_hostname() {
+    local ip="$1"
+    if [[ -n "${host_name[$ip]:-}" ]]; then
+        printf '%s' "${host_name[$ip]}"
+    elif [[ -n "${cached_name[$ip]:-}" ]]; then
+        printf '%s' "${cached_name[$ip]}"
+    else
+        printf '%s' "$ip"
+    fi
+}
+
+substitute() {
+    local tmpl="$1" ip="$2" user="$3" hostname="$4"
+    tmpl="${tmpl//\{ip\}/$ip}"
+    tmpl="${tmpl//\{user\}/$user}"
+    tmpl="${tmpl//\{hostname\}/$hostname}"
+    printf '%s' "$tmpl"
+}
+
+session_exists() {
+    "${TMUX_CMD[@]}" has-session -t "=$session_name" 2>/dev/null
+}
+
+build_session() {
+    # Nuke the whole server, not just the base session. `kill-session
+    # -t =homelab` leaves any grouped sessions (open konsoles) running
+    # with stale windows, so you can rebuild and still be staring at
+    # the old panes. kill-server ensures every konsole gets detached
+    # and the next attach sees the fresh session.
+    "${TMUX_CMD[@]}" kill-server 2>/dev/null || true
+
+    local first=true
+    for ip in "${ips[@]}"; do
+        local user name left right right_title target
+        user="${host_user[$ip]:-$default_user}"
+        name="$(resolve_hostname "$ip")"
+        left="$(substitute "${host_left_cmd[$ip]:-$left_cmd}" "$ip" "$user" "$name")"
+        right="$(substitute "${host_right_cmd[$ip]:-$right_cmd}" "$ip" "$user" "$name")"
+        right_title="${host_right_cmd[$ip]:-$right_cmd}"
+        right_title="${right_title%% *}"
+        target="$session_name:$name"
+
+        local env_args=(-e "HOST_IP=$ip" -e "HOST_NAME=$name" -e "HOST_USER=$user")
+
+        if $first; then
+            "${TMUX_CMD[@]}" -f "$TMUX_CONF" new-session -d -s "$session_name" \
+                -n "$name" "${env_args[@]}" "$left"
+            first=false
+        else
+            "${TMUX_CMD[@]}" new-window -t "$session_name:" -n "$name" \
+                "${env_args[@]}" "$left" || { echo "Warning: failed to create window for $ip ($name), skipping" >&2; continue; }
+        fi
+
+        "${TMUX_CMD[@]}" select-pane -t "$target.0" -T "ssh $user@$name"
+        "${TMUX_CMD[@]}" split-window -h -t "$target" "${env_args[@]}" "$right"
+        "${TMUX_CMD[@]}" select-pane -t "$target.1" -T "$right_title"
+        "${TMUX_CMD[@]}" select-layout -t "$target" "$layout"
+        "${TMUX_CMD[@]}" select-pane -t "$target.0"
+
+        # Window-scoped options so the status bar can identify which host
+        # this window connects to (see #{@host_ip} in homelab.tmux.conf).
+        "${TMUX_CMD[@]}" set-option -w -t "$target" @host_ip   "$ip"
+        "${TMUX_CMD[@]}" set-option -w -t "$target" @host_user "$user"
+        "${TMUX_CMD[@]}" set-option -w -t "$target" @host_name "$name"
+    done
+
+    local mtime
+    mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE")
+    # Use -g (server-global) so grouped sessions see these too. Session
+    # groups don't share session-scoped options, which would make
+    # #{@info_script} etc. empty from any konsole attached via the
+    # grouped-session path. Safe because we're on a dedicated socket.
+    "${TMUX_CMD[@]}" set-option -g @subnet         "$subnet"
+    "${TMUX_CMD[@]}" set-option -g @cache_file     "$CACHE_FILE"
+    "${TMUX_CMD[@]}" set-option -g @cache_mtime    "$mtime"
+    "${TMUX_CMD[@]}" set-option -g @picker_script  "$PICKER"
+    "${TMUX_CMD[@]}" set-option -g @info_script    "$INFO_SCRIPT"
+    "${TMUX_CMD[@]}" set-option -g @default_layout "$layout"
+
+    "${TMUX_CMD[@]}" select-window -t "$session_name:^"
+}
+
+built=false
+if $rebuild || ! session_exists; then
+    build_session
+    built=true
+fi
+
+# Warm the host-info cache for every host in parallel so window
+# switches hit the cache immediately. Each fetch runs apt-get update
+# on the remote, so this is real work. Backgrounding lets the user
+# attach to tmux without waiting on it.
+echo "Warming host-info cache for ${#ips[@]} host(s) in background..."
+for ip in "${ips[@]}"; do
+    u="${host_user[$ip]:-$default_user}"
+    "$INFO_SCRIPT" "$u" "$ip" >/dev/null 2>&1 &
+done
+disown -a 2>/dev/null || true
+
+# Reload conf so edits to homelab.tmux.conf take effect without --rebuild.
+# (-f on the first new-session is ignored if the server was already up.)
+"${TMUX_CMD[@]}" source-file "$TMUX_CONF"
+
+$built || echo "Reusing existing session '$session_name' (use --rebuild to recreate)."
+
+# Grouped-attach command: creates a new group member sharing the base
+# session's windows but with its own focus, then sets destroy-unattached
+# so the view cleans up when the terminal closes.
+attach_cmd=("${TMUX_CMD[@]}" new-session -t "$session_name" \;
+            set-option destroy-unattached on)
+
+if [[ -n "${TMUX:-}" ]]; then
+    echo "Already inside a tmux session (different server)."
+    echo "Run this from a fresh terminal, or: tmux -L $SOCKET new-session -t $session_name"
+elif command -v "$terminal" &>/dev/null; then
+    "$terminal" -e "${attach_cmd[@]}" &
+    disown
+else
+    echo "Terminal '$terminal' not found; attaching in current shell." >&2
+    "${attach_cmd[@]}"
+fi
