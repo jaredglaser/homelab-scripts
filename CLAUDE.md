@@ -26,6 +26,7 @@ Each script lives in its own subdirectory:
 4. **Commit scope**: Only commit files relevant to the current task.
 5. **Verify before claiming fixed**: Run the relevant script path (or at minimum `bash -n`) before reporting a fix as done. Don't claim success without evidence.
 6. **No claudisms in written output**: Applies to code, comments, commit messages, and docs. Banned: em dashes, en dashes, `--` as a dash substitute, vocabulary tells ("leverage", "utilize", "delve", "robust", "comprehensive", "meticulous", "facilitate", "it's worth noting"), performative qualifiers ("carefully", "thoroughly"), boilerplate sign-offs. Use plain alternatives.
+7. **Document automation in rollback steps**: When a script re-applies state via apt/dpkg hooks, cron, systemd timers, or file watchers, its README's recovery/rollback section must include the step to disable that automation. Otherwise restoring from a backup gets undone on the next trigger.
 
 ## Comments
 
