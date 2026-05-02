@@ -145,9 +145,31 @@ resolve_remote_hostname() {
 scan_subnet() {
     require nmap
     echo "Scanning $subnet for live hosts..."
+
+    local nmap_tmp
+    nmap_tmp="$(mktemp)"
+
+    # -oG to file keeps host records out of stdout, leaving only the
+    # human-readable stats lines (including --stats-every progress).
+    nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "$subnet" -oG "$nmap_tmp" 2>/dev/null \
+        | {
+            current_prefix=""
+            while IFS= read -r line; do
+                [[ "$line" != "Nmap scan report for "* ]] && continue
+                ip="${line#Nmap scan report for }"
+                prefix="${ip%.*}"
+                if [[ "$prefix" != "$current_prefix" ]]; then
+                    echo "  $prefix.0/24:"
+                    current_prefix="$prefix"
+                fi
+                echo "    $ip"
+            done
+        }
+
     local scanned
-    mapfile -t scanned < <(nmap -sn -n --min-parallelism 32 "$subnet" -oG - 2>/dev/null \
-        | awk '/Up$/{print $2}' | sort -V)
+    mapfile -t scanned < <(awk '/22\/open/{print $2}' "$nmap_tmp" | sort -V)
+    rm -f "$nmap_tmp"
+
     if [[ ${#scanned[@]} -eq 0 ]]; then
         echo "No live hosts found in $subnet" >&2
         exit 1
