@@ -27,10 +27,11 @@ The same mismatch breaks replication when migrating a guest to a previously-repl
 
 Run these on the Proxmox node, as root.
 
-1. Install the script and make it executable:
+1. Download the script and make it executable:
 
    ```bash
-   cp pve-zfs-large-block-patch.sh /usr/local/sbin/pve-zfs-large-block-patch.sh
+   curl -fsSL -o /usr/local/sbin/pve-zfs-large-block-patch.sh \
+       https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh
    chmod +x /usr/local/sbin/pve-zfs-large-block-patch.sh
    ```
 
