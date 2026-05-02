@@ -93,17 +93,27 @@ If `libpve-storage-perl` is not the owning package on your setup, find it with `
 
 ## Recovery
 
-Each `APPLIED` run writes a timestamped backup to `/var/backups/pve-zfs-L-patch/`. To roll back a specific patch run:
-
-```bash
-cp /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp> \
-   /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm
-```
-
-For the rollback to stick, also disable the apt hook. Otherwise the very next `apt`/`dpkg` operation re-applies the patch and undoes your restore. Either remove the file outright:
+To restore the upstream copy of `ZFSPoolPlugin.pm` (no `-L` flag), first disable the apt hook so it cannot re-patch on the next dpkg operation:
 
 ```bash
 rm /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch
 ```
 
-or comment out the `DPkg::Post-Invoke` block inside it if you want to keep it around for reference.
+Or comment out the `DPkg::Post-Invoke` block inside it if you want to keep the file around for reference.
+
+Then restore the file. Two options:
+
+- **Reinstall the owning package** to get the current upstream `ZFSPoolPlugin.pm`:
+
+  ```bash
+  apt-get install --reinstall libpve-storage-perl
+  ```
+
+  Simplest for a clean rollback, and includes any package-level changes that have shipped since the patch was first applied.
+
+- **Restore a specific timestamped backup** from `/var/backups/pve-zfs-L-patch/` if you need the exact pre-patch byte image from a particular run (for example, to bisect a regression introduced by a later package update):
+
+  ```bash
+  cp /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp> \
+     /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm
+  ```
