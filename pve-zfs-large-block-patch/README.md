@@ -60,24 +60,36 @@ Run these on the Proxmox node, as root.
 
 ## Verify the hook re-applies after an update
 
-Package updates revert the file to upstream. To confirm the apt hook will catch this without waiting for a real Proxmox update, simulate the revert by stripping the `-L` flag back out:
+Package updates revert the file to upstream. To confirm the apt hook will catch this without waiting for a real Proxmox update, reinstall the package that owns the file:
 
 ```bash
-sed -i "s/my \$cmd = \['zfs', 'send', '-RpvL'\]/my \$cmd = ['zfs', 'send', '-Rpv']/" \
-    /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm
+apt-get install --reinstall libpve-storage-perl
 ```
 
-Then trigger any apt operation, for example:
+The reinstall unpacks the upstream copy of `ZFSPoolPlugin.pm` (the same revert a real upgrade would do), and the `DPkg::Post-Invoke` hook then fires and re-patches it. A successful run ends with the `APPLIED` line, after the trigger processing:
 
-```bash
-apt update
+```
+0 upgraded, 0 newly installed, 1 reinstalled, 0 to remove and 0 not upgraded.
+...
+Preparing to unpack .../libpve-storage-perl_9.1.2_all.deb ...
+Unpacking libpve-storage-perl (9.1.2) over (9.1.2) ...
+Setting up libpve-storage-perl (9.1.2) ...
+Processing triggers for pve-manager (9.1.9) ...
+Processing triggers for man-db (2.13.1-1) ...
+Processing triggers for pve-ha-manager (5.2.0) ...
+[pve-zfs-L-patch] APPLIED - patched /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm to add -L flag (backup: /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp>)
 ```
 
-The post-invoke hook should fire and print `APPLIED - patched ...`. Confirm with:
+Then confirm the file actually has the `-L` flag now:
 
 ```bash
 grep -F "'-RpvL'" /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm
 ```
+
+If `libpve-storage-perl` is not the owning package on your setup, find it with `dpkg -S /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm` and reinstall that one instead.
+
+> [!NOTE]
+> `apt update` only refreshes package indexes and does not invoke dpkg, so it does not trigger `DPkg::Post-Invoke`. Use a dpkg-invoking operation (`apt-get install`, `apt-get upgrade`, `apt-get install --reinstall ...`) when testing.
 
 ## Recovery
 
