@@ -264,7 +264,7 @@ session_exists() {
 # A session is "healthy" only if build_session ran to completion and set the
 # marker. Without this, a build that fails partway (e.g. a tmux command errors
 # under set -e) leaves a partial session that the next run would happily
-# "reuse" — masking the failure and missing every host past the failure point.
+# "reuse", masking the failure and missing every host past the failure point.
 session_is_healthy() {
     session_exists || return 1
     [[ "$("${TMUX_CMD[@]}" show-option -gv @build_complete 2>/dev/null)" == "1" ]]
@@ -277,6 +277,17 @@ build_session() {
     # the old panes. kill-server ensures every konsole gets detached
     # and the next attach sees the fresh session.
     "${TMUX_CMD[@]}" kill-server 2>/dev/null || true
+
+    # kill-server returns before the socket finishes tearing down. Without
+    # this poll, the first new-session below races into a still-dying
+    # server and aborts with "server exited unexpectedly", killing the
+    # whole rebuild via set -e. Wait until list-sessions confirms the
+    # server is gone (cap at ~1s so a wedged server still surfaces).
+    local i
+    for i in {1..50}; do
+        "${TMUX_CMD[@]}" list-sessions >/dev/null 2>&1 || break
+        sleep 0.02
+    done
 
     local first=true
     for ip in "${ips[@]}"; do
