@@ -120,13 +120,32 @@ format_age() {
 read_cache() {
     ips=()
     [[ -f "$CACHE_FILE" ]] || return
+    local -A seen_name
+    local -a dropped=()
+    local effective
     while IFS=$'\t' read -r c_ip c_name || [[ -n "$c_ip" ]]; do
         c_ip="$(trim "${c_ip%%#*}")"
         c_name="$(trim "$c_name")"
         [[ -z "$c_ip" ]] && continue
+
+        # Multiple interfaces on the same physical node resolve to the same
+        # short hostname. First IP wins (cache is sorted by IP). Empty names
+        # don't collide; those hosts get the IP as window name later.
+        effective="${host_name[$c_ip]:-$c_name}"
+        if [[ -n "$effective" && -n "${seen_name[$effective]:-}" ]]; then
+            dropped+=("  $c_ip ($effective -> ${seen_name[$effective]})")
+            continue
+        fi
+        [[ -n "$effective" ]] && seen_name["$effective"]="$c_ip"
+
         ips+=("$c_ip")
         [[ -n "$c_name" ]] && cached_name["$c_ip"]="$c_name"
     done < "$CACHE_FILE"
+
+    if (( ${#dropped[@]} > 0 )); then
+        echo "Deduped ${#dropped[@]} IP(s) sharing hostnames with an earlier entry:" >&2
+        printf '%s\n' "${dropped[@]}" >&2
+    fi
 }
 
 resolve_remote_hostname() {
@@ -242,6 +261,15 @@ session_exists() {
     "${TMUX_CMD[@]}" has-session -t "=$session_name" 2>/dev/null
 }
 
+# A session is "healthy" only if build_session ran to completion and set the
+# marker. Without this, a build that fails partway (e.g. a tmux command errors
+# under set -e) leaves a partial session that the next run would happily
+# "reuse" — masking the failure and missing every host past the failure point.
+session_is_healthy() {
+    session_exists || return 1
+    [[ "$("${TMUX_CMD[@]}" show-option -gv @build_complete 2>/dev/null)" == "1" ]]
+}
+
 build_session() {
     # Nuke the whole server, not just the base session. `kill-session
     # -t =homelab` leaves any grouped sessions (open konsoles) running
@@ -299,10 +327,12 @@ build_session() {
     "${TMUX_CMD[@]}" set-option -g @default_layout "$layout"
 
     "${TMUX_CMD[@]}" select-window -t "$session_name:^"
+
+    "${TMUX_CMD[@]}" set-option -g @build_complete 1
 }
 
 built=false
-if $rebuild || ! session_exists; then
+if $rebuild || ! session_is_healthy; then
     build_session
     built=true
 fi
