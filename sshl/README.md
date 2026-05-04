@@ -4,7 +4,7 @@ Scans a subnet for live hosts and builds a tmux session with one SSH window per 
 
 Runs on your workstation, not on the homelab nodes themselves.
 
-**Dependencies:** `tmux`, `nmap`, `konsole` (or configure your own terminal), `fzf` (optional, required for the host picker keybinding)
+**Dependencies:** `tmux`, `nmap`, `fzf`, `konsole` (or configure your own terminal)
 
 > [!NOTE]
 > Key-based SSH auth is strongly recommended. The script opens a session per host automatically, so if you rely on password auth you will need to sign in manually in every window, which defeats the purpose. If you haven't set up SSH keys yet, `ssh-copy-id user@host` is the quickest way to get there.
@@ -17,18 +17,16 @@ cd sshl
 # First run: creates config from config.example, then edit it
 ./sshl
 
-# Normal run: uses cached host list
+# After config is set up, the first sshl run scans the subnet and pops a
+# checklist so you pick which hosts become windows. Subsequent runs just
+# attach a new grouped view to the existing session.
 ./sshl
 
-# Re-scan the subnet and rebuild the session
-./sshl --rescan
-
-# Rebuild the session from the existing cache
+# Emergency: nuke the tmux server and rebuild from the cache
 ./sshl --rebuild
-
-# Just update the cache, no tmux
-./sshl --scan-only
 ```
+
+Day-to-day host management (rescan + add, delete, reorder, un-ignore) lives inside the tmux session as key bindings rather than CLI flags. See below.
 
 ## Keybindings
 
@@ -36,7 +34,10 @@ Active inside the tmux session:
 
 | Key | Action |
 |-----|--------|
-| `<prefix> H` | Open fuzzy host picker, jump to selected window |
+| `<prefix> S` | Scan + filter popup. Cached hosts appear pre-checked, newly-discovered hosts unchecked, ignored hosts hidden. Confirm = kill windows for unticked, add windows for newly-ticked, write changes to `ips.cache` and `ignored.cache`. |
+| `<prefix> O` | Reorder popup. Arrow keys / `j`/`k` move the cursor; `space` to grab the highlighted host, arrows to move it, `space` to drop, `enter` to apply, `q`/`esc` to cancel. |
+| `<prefix> I` | Show ignored hosts. Tick to un-ignore (returns them to the next scan as candidates). |
+| `<prefix> H` | Fuzzy host picker, jump to selected window |
 | `<prefix> r` | Respawn dead pane and force-refresh host info |
 | `↻` (status bar) | Force-refresh host info for the current window |
 | Mouse | Enabled; click window tabs to switch hosts |

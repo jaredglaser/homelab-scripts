@@ -2,40 +2,47 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SSHL_BIN="$SCRIPT_DIR/$(basename "${BASH_SOURCE[0]}")"
 CONFIG_FILE="${SCRIPT_DIR}/config"
 TMUX_CONF="${SCRIPT_DIR}/homelab.tmux.conf"
 PICKER="${SCRIPT_DIR}/host-picker.sh"
 INFO_SCRIPT="${SCRIPT_DIR}/host-info.sh"
 CACHE_FILE="${SCRIPT_DIR}/ips.cache"
+IGNORED_FILE="${SCRIPT_DIR}/ignored.cache"
 SOCKET="homelab"
 TMUX_CMD=(tmux -L "$SOCKET")
 
-rescan=false
-scan_only=false
+# Mode dispatch. Hidden --popup-* subcommands are invoked from tmux key
+# bindings via display-popup; the user-facing flags appear in --help.
+mode="default"
 rebuild=false
 for arg in "$@"; do
     case "$arg" in
-        -r|--rescan)    rescan=true; rebuild=true ;;
-        -s|--scan-only) rescan=true; scan_only=true ;;
-        -R|--rebuild)   rebuild=true ;;
+        --popup-scan)    mode="popup-scan" ;;
+        --popup-reorder) mode="popup-reorder" ;;
+        --popup-ignored) mode="popup-ignored" ;;
+        -R|--rebuild)    rebuild=true ;;
         -h|--help)
             cat <<EOF
 Usage: $(basename "$0") [options]
-  -r, --rescan     Re-scan the subnet, refresh the IP cache, and rebuild
-  -s, --scan-only  Re-scan and update the cache, then exit (no tmux)
-  -R, --rebuild    Rebuild the tmux session from the existing cache
-  -h, --help       Show this help
+  -R, --rebuild    Nuke the tmux server and rebuild windows from cache.
+  -h, --help       Show this help.
 
-Runs on a dedicated tmux server ('tmux -L $SOCKET'). If the session
-already exists and --rebuild is not passed, a new grouped view is
-attached (shared window list, independent focus). Run the script again
-from a second terminal to get a second view.
+With no flags: bootstrap a new session (scan + filter on first run) or
+attach a grouped view to the existing session.
+
+Inside the session, use these key bindings to manage hosts:
+  prefix S    Scan + add or remove hosts (popup)
+  prefix O    Reorder windows (popup)
+  prefix I    Show ignored hosts to un-ignore (popup)
+  prefix H    Fuzzy jump to a host
 EOF
             exit 0 ;;
         *) echo "Unknown argument: $arg" >&2; exit 1 ;;
     esac
 done
 
+# ── Config loading ───────────────────────────────────────────────────
 if [[ ! -f "$CONFIG_FILE" ]]; then
     if [[ -f "${SCRIPT_DIR}/config.example" ]]; then
         cp "${SCRIPT_DIR}/config.example" "$CONFIG_FILE" || {
@@ -75,10 +82,8 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     line="$(trim "$line")"
     [[ -z "$line" ]] && continue
     [[ "$line" != *=* ]] && continue
-
     key="$(trim "${line%%=*}")"
     value="$(trim "${line#*=}")"
-
     case "$key" in
         subnet)        subnet="$value" ;;
         session_name)  session_name="$value" ;;
@@ -117,36 +122,80 @@ format_age() {
     fi
 }
 
+# ── Cache + ignored I/O ──────────────────────────────────────────────
+# ips.cache mirrors the live tmux session. Each line is `<ip>\t<name>`
+# in display order (NOT IP-sorted). The popup flows mutate the cache
+# and the live session in lockstep.
+#
+# ignored.cache is the same format. IPs here never reappear as scan
+# candidates until un-ignored via the ignored popup.
+
+declare -a ips=()
+declare -a ignored_ips=()
+declare -A ignored_name
+
 read_cache() {
     ips=()
-    [[ -f "$CACHE_FILE" ]] || return
-    local -A seen_name
-    local -a dropped=()
-    local effective
+    cached_name=()
+    # Explicit `return 0`: bare `return` propagates the [[ -f ]] exit
+    # status, which would trip set -e in callers when the file is absent.
+    [[ -f "$CACHE_FILE" ]] || return 0
+    local c_ip c_name
     while IFS=$'\t' read -r c_ip c_name || [[ -n "$c_ip" ]]; do
         c_ip="$(trim "${c_ip%%#*}")"
         c_name="$(trim "$c_name")"
         [[ -z "$c_ip" ]] && continue
-
-        # Multiple interfaces on the same physical node resolve to the same
-        # short hostname. First IP wins (cache is sorted by IP). Empty names
-        # don't collide; those hosts get the IP as window name later.
-        effective="${host_name[$c_ip]:-$c_name}"
-        if [[ -n "$effective" && -n "${seen_name[$effective]:-}" ]]; then
-            dropped+=("  $c_ip ($effective -> ${seen_name[$effective]})")
-            continue
-        fi
-        [[ -n "$effective" ]] && seen_name["$effective"]="$c_ip"
-
         ips+=("$c_ip")
         [[ -n "$c_name" ]] && cached_name["$c_ip"]="$c_name"
     done < "$CACHE_FILE"
-
-    if (( ${#dropped[@]} > 0 )); then
-        echo "Deduped ${#dropped[@]} IP(s) sharing hostnames with an earlier entry:" >&2
-        printf '%s\n' "${dropped[@]}" >&2
-    fi
 }
+
+read_ignored() {
+    ignored_ips=()
+    ignored_name=()
+    [[ -f "$IGNORED_FILE" ]] || return 0
+    local c_ip c_name
+    while IFS=$'\t' read -r c_ip c_name || [[ -n "$c_ip" ]]; do
+        c_ip="$(trim "${c_ip%%#*}")"
+        c_name="$(trim "$c_name")"
+        [[ -z "$c_ip" ]] && continue
+        ignored_ips+=("$c_ip")
+        [[ -n "$c_name" ]] && ignored_name["$c_ip"]="$c_name"
+    done < "$IGNORED_FILE"
+}
+
+# Atomic writes via temp + rename so a partial write can't corrupt
+# the cache file mid-update.
+write_cache() {
+    local tmp="${CACHE_FILE}.tmp.$$"
+    : > "$tmp"
+    local ip
+    for ip in "${ips[@]}"; do
+        printf '%s\t%s\n' "$ip" "${cached_name[$ip]:-}" >> "$tmp"
+    done
+    mv "$tmp" "$CACHE_FILE"
+    update_cache_mtime_option
+}
+
+write_ignored() {
+    local tmp="${IGNORED_FILE}.tmp.$$"
+    : > "$tmp"
+    local ip
+    for ip in "${ignored_ips[@]}"; do
+        printf '%s\t%s\n' "$ip" "${ignored_name[$ip]:-}" >> "$tmp"
+    done
+    mv "$tmp" "$IGNORED_FILE"
+}
+
+update_cache_mtime_option() {
+    local mtime
+    mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE" 2>/dev/null) || return 0
+    "${TMUX_CMD[@]}" set-option -g @cache_mtime "$mtime" 2>/dev/null || true
+}
+
+# ── nmap + hostname resolution ───────────────────────────────────────
+declare -a discovered_ips=()
+declare -A discovered_name
 
 resolve_remote_hostname() {
     local ip="$1"
@@ -161,10 +210,14 @@ resolve_remote_hostname() {
     [[ -n "$name" ]] && printf '%s' "$name"
 }
 
+# Run nmap, populate discovered_ips/discovered_name. No file writes,
+# no cache mutation; callers decide what to do with the results.
 scan_subnet() {
     require nmap
-    echo "Scanning $subnet for live hosts..."
+    discovered_ips=()
+    discovered_name=()
 
+    echo "Scanning $subnet for live hosts..." >&2
     local nmap_tmp
     nmap_tmp="$(mktemp)"
 
@@ -172,16 +225,16 @@ scan_subnet() {
     # human-readable stats lines (including --stats-every progress).
     nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "$subnet" -oG "$nmap_tmp" 2>/dev/null \
         | {
-            current_prefix=""
+            local current_prefix="" line ip prefix
             while IFS= read -r line; do
                 [[ "$line" != "Nmap scan report for "* ]] && continue
                 ip="${line#Nmap scan report for }"
                 prefix="${ip%.*}"
                 if [[ "$prefix" != "$current_prefix" ]]; then
-                    echo "  $prefix.0/24:"
+                    echo "  $prefix.0/24:" >&2
                     current_prefix="$prefix"
                 fi
-                echo "    $ip"
+                echo "    $ip" >&2
             done
         }
 
@@ -191,11 +244,11 @@ scan_subnet() {
 
     if [[ ${#scanned[@]} -eq 0 ]]; then
         echo "No live hosts found in $subnet" >&2
-        exit 1
+        return 0
     fi
 
-    echo "Resolving hostnames for ${#scanned[@]} host(s)..."
-    local tmp
+    echo "Resolving hostnames for ${#scanned[@]} host(s)..." >&2
+    local tmp ip name
     tmp="$(mktemp)"
     for ip in "${scanned[@]}"; do
         (
@@ -211,39 +264,22 @@ scan_subnet() {
         ) >>"$tmp" &
     done
     wait
-    sort -V "$tmp" >"$CACHE_FILE"
+    while IFS=$'\t' read -r ip name; do
+        discovered_ips+=("$ip")
+        [[ -n "$name" ]] && discovered_name["$ip"]="$name"
+    done < <(sort -V "$tmp")
     rm -f "$tmp"
-
-    ips=()
-    cached_name=()
-    read_cache
-    echo "Cached ${#ips[@]} host(s) to $CACHE_FILE"
 }
 
-if $rescan || [[ ! -s "$CACHE_FILE" ]]; then
-    scan_subnet
-else
-    read_cache
-    if [[ ${#ips[@]} -eq 0 ]]; then
-        echo "Cache $CACHE_FILE is empty; rescanning." >&2
-        scan_subnet
-    else
-        mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE")
-        age=$(( $(date +%s) - mtime ))
-        echo "Using ${#ips[@]} cached host(s) from $CACHE_FILE (age: $(format_age "$age"); --rescan to refresh)"
-    fi
-fi
-
-if $scan_only; then
-    exit 0
-fi
-
+# ── Display name resolution ──────────────────────────────────────────
 resolve_hostname() {
     local ip="$1"
     if [[ -n "${host_name[$ip]:-}" ]]; then
         printf '%s' "${host_name[$ip]}"
     elif [[ -n "${cached_name[$ip]:-}" ]]; then
         printf '%s' "${cached_name[$ip]}"
+    elif [[ -n "${discovered_name[$ip]:-}" ]]; then
+        printf '%s' "${discovered_name[$ip]}"
     else
         printf '%s' "$ip"
     fi
@@ -257,102 +293,549 @@ substitute() {
     printf '%s' "$tmpl"
 }
 
+# ── Session helpers ──────────────────────────────────────────────────
 session_exists() {
     "${TMUX_CMD[@]}" has-session -t "=$session_name" 2>/dev/null
 }
 
-# A session is "healthy" only if build_session ran to completion and set the
-# marker. Without this, a build that fails partway (e.g. a tmux command errors
-# under set -e) leaves a partial session that the next run would happily
-# "reuse", masking the failure and missing every host past the failure point.
+# A session is "healthy" only if build_session ran to completion and set
+# the marker. Without this, a build that fails partway (e.g. a tmux
+# command errors under set -e) leaves a partial session that the next
+# run would happily "reuse", masking the failure and missing every host
+# past the failure point.
 session_is_healthy() {
     session_exists || return 1
     [[ "$("${TMUX_CMD[@]}" show-option -gv @build_complete 2>/dev/null)" == "1" ]]
 }
 
+# Find the window-id (e.g. @5) for a host IP via the @host_ip option
+# we set per-window. Empty string if not found. Targeting by id avoids
+# the duplicate-window-name ambiguity that targeting by name has.
+find_window_id_by_ip() {
+    local target="$1"
+    "${TMUX_CMD[@]}" list-windows -t "=$session_name" \
+        -F '#{window_id} #{@host_ip}' 2>/dev/null \
+        | awk -v ip="$target" '$2 == ip {print $1; exit}'
+}
+
+set_session_options() {
+    "${TMUX_CMD[@]}" set-option -g @subnet         "$subnet"
+    "${TMUX_CMD[@]}" set-option -g @cache_file     "$CACHE_FILE"
+    "${TMUX_CMD[@]}" set-option -g @ignored_file   "$IGNORED_FILE"
+    "${TMUX_CMD[@]}" set-option -g @sshl_bin       "$SSHL_BIN"
+    "${TMUX_CMD[@]}" set-option -g @picker_script  "$PICKER"
+    "${TMUX_CMD[@]}" set-option -g @info_script    "$INFO_SCRIPT"
+    "${TMUX_CMD[@]}" set-option -g @default_layout "$layout"
+    update_cache_mtime_option
+    set_session_env
+}
+
+# Mirror the @var options into the global tmux environment. The popup
+# key bindings need these as shell variables ($SSHL_BIN etc.) because
+# display-popup -E does NOT format-expand its shell-command despite
+# what the docs imply; #{@sshl_bin} would reach the spawned shell as a
+# literal string. Newly-spawned panes (popups included) inherit this
+# global env, so by the time prefix S fires the popup's shell already
+# has $SSHL_BIN set.
+set_session_env() {
+    "${TMUX_CMD[@]}" set-environment -g SSHL_BIN     "$SSHL_BIN"     2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_CACHE   "$CACHE_FILE"   2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_IGNORED "$IGNORED_FILE" 2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_PICKER  "$PICKER"       2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_INFO    "$INFO_SCRIPT"  2>/dev/null || true
+}
+
+# Add a window for a host. With --first, opens the session via
+# new-session (caller must guarantee no session exists yet); without
+# it, appends a window to the existing session.
+add_window() {
+    local first=false
+    if [[ "${1:-}" == "--first" ]]; then first=true; shift; fi
+    local ip="$1"
+
+    local user name left right right_title
+    user="${host_user[$ip]:-$default_user}"
+    name="$(resolve_hostname "$ip")"
+    left="$(substitute "${host_left_cmd[$ip]:-$left_cmd}" "$ip" "$user" "$name")"
+    right="$(substitute "${host_right_cmd[$ip]:-$right_cmd}" "$ip" "$user" "$name")"
+    right_title="${host_right_cmd[$ip]:-$right_cmd}"
+    right_title="${right_title%% *}"
+
+    local env_args=(-e "HOST_IP=$ip" -e "HOST_NAME=$name" -e "HOST_USER=$user")
+    local wid
+    if $first; then
+        "${TMUX_CMD[@]}" -f "$TMUX_CONF" new-session -d -s "$session_name" \
+            -n "$name" "${env_args[@]}" "$left"
+        wid=$("${TMUX_CMD[@]}" display-message -p -t "=$session_name:$name" '#{window_id}')
+    else
+        wid=$("${TMUX_CMD[@]}" new-window -t "=$session_name" -n "$name" \
+            -P -F '#{window_id}' "${env_args[@]}" "$left") || {
+            echo "Warning: failed to create window for $ip ($name), skipping" >&2
+            return 1
+        }
+    fi
+
+    "${TMUX_CMD[@]}" select-pane -t "$wid.0" -T "ssh $user@$name"
+    "${TMUX_CMD[@]}" split-window -h -t "$wid" "${env_args[@]}" "$right"
+    "${TMUX_CMD[@]}" select-pane -t "$wid.1" -T "$right_title"
+    "${TMUX_CMD[@]}" select-layout -t "$wid" "$layout"
+    "${TMUX_CMD[@]}" select-pane -t "$wid.0"
+
+    # Window-scoped options drive the status bar formatters and the
+    # find_window_id_by_ip lookup.
+    "${TMUX_CMD[@]}" set-option -w -t "$wid" @host_ip   "$ip"
+    "${TMUX_CMD[@]}" set-option -w -t "$wid" @host_user "$user"
+    "${TMUX_CMD[@]}" set-option -w -t "$wid" @host_name "$name"
+}
+
+kill_host_window() {
+    local ip="$1"
+    local wid
+    wid="$(find_window_id_by_ip "$ip")"
+    [[ -z "$wid" ]] && return 0
+    "${TMUX_CMD[@]}" kill-window -t "$wid" 2>/dev/null || true
+}
+
 build_session() {
     # Nuke the whole server, not just the base session. `kill-session
-    # -t =homelab` leaves any grouped sessions (open konsoles) running
-    # with stale windows, so you can rebuild and still be staring at
-    # the old panes. kill-server ensures every konsole gets detached
-    # and the next attach sees the fresh session.
+    # -t =homelab` leaves grouped sessions (open konsoles) running with
+    # stale windows. kill-server detaches every konsole and ensures
+    # the next attach sees the fresh session.
     "${TMUX_CMD[@]}" kill-server 2>/dev/null || true
 
-    # kill-server returns before the socket finishes tearing down. Without
-    # this poll, the first new-session below races into a still-dying
-    # server and aborts with "server exited unexpectedly", killing the
-    # whole rebuild via set -e. Wait until list-sessions confirms the
-    # server is gone (cap at ~1s so a wedged server still surfaces).
+    # kill-server returns before the socket finishes tearing down. The
+    # next tmux command can race into the dying server and abort with
+    # "server exited unexpectedly". Wait for list-sessions to confirm
+    # the server is gone (cap at ~1s so a wedged server still surfaces).
     local i
     for i in {1..50}; do
         "${TMUX_CMD[@]}" list-sessions >/dev/null 2>&1 || break
         sleep 0.02
     done
 
-    local first=true
-    for ip in "${ips[@]}"; do
-        local user name left right right_title target
-        user="${host_user[$ip]:-$default_user}"
-        name="$(resolve_hostname "$ip")"
-        left="$(substitute "${host_left_cmd[$ip]:-$left_cmd}" "$ip" "$user" "$name")"
-        right="$(substitute "${host_right_cmd[$ip]:-$right_cmd}" "$ip" "$user" "$name")"
-        right_title="${host_right_cmd[$ip]:-$right_cmd}"
-        right_title="${right_title%% *}"
-        target="$session_name:$name"
+    if [[ ${#ips[@]} -eq 0 ]]; then
+        echo "Error: cache is empty; nothing to build." >&2
+        return 1
+    fi
 
-        local env_args=(-e "HOST_IP=$ip" -e "HOST_NAME=$name" -e "HOST_USER=$user")
+    add_window --first "${ips[0]}"
+    set_session_options
 
-        if $first; then
-            "${TMUX_CMD[@]}" -f "$TMUX_CONF" new-session -d -s "$session_name" \
-                -n "$name" "${env_args[@]}" "$left"
-            first=false
-        else
-            "${TMUX_CMD[@]}" new-window -t "$session_name:" -n "$name" \
-                "${env_args[@]}" "$left" || { echo "Warning: failed to create window for $ip ($name), skipping" >&2; continue; }
-        fi
-
-        "${TMUX_CMD[@]}" select-pane -t "$target.0" -T "ssh $user@$name"
-        "${TMUX_CMD[@]}" split-window -h -t "$target" "${env_args[@]}" "$right"
-        "${TMUX_CMD[@]}" select-pane -t "$target.1" -T "$right_title"
-        "${TMUX_CMD[@]}" select-layout -t "$target" "$layout"
-        "${TMUX_CMD[@]}" select-pane -t "$target.0"
-
-        # Window-scoped options so the status bar can identify which host
-        # this window connects to (see #{@host_ip} in homelab.tmux.conf).
-        "${TMUX_CMD[@]}" set-option -w -t "$target" @host_ip   "$ip"
-        "${TMUX_CMD[@]}" set-option -w -t "$target" @host_user "$user"
-        "${TMUX_CMD[@]}" set-option -w -t "$target" @host_name "$name"
+    local ip
+    for ip in "${ips[@]:1}"; do
+        add_window "$ip"
     done
 
-    local mtime
-    mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE")
-    # Use -g (server-global) so grouped sessions see these too. Session
-    # groups don't share session-scoped options, which would make
-    # #{@info_script} etc. empty from any konsole attached via the
-    # grouped-session path. Safe because we're on a dedicated socket.
-    "${TMUX_CMD[@]}" set-option -g @subnet         "$subnet"
-    "${TMUX_CMD[@]}" set-option -g @cache_file     "$CACHE_FILE"
-    "${TMUX_CMD[@]}" set-option -g @cache_mtime    "$mtime"
-    "${TMUX_CMD[@]}" set-option -g @picker_script  "$PICKER"
-    "${TMUX_CMD[@]}" set-option -g @info_script    "$INFO_SCRIPT"
-    "${TMUX_CMD[@]}" set-option -g @default_layout "$layout"
-
     "${TMUX_CMD[@]}" select-window -t "$session_name:^"
-
+    # Set last so an aborted build leaves the marker unset; the next
+    # session_is_healthy check then forces a clean rebuild.
     "${TMUX_CMD[@]}" set-option -g @build_complete 1
 }
 
+# Update server-globals from current state without rebuilding. Used
+# after popup-driven mutations so the status bar stays current.
+refresh_session_options() {
+    session_exists || return 0
+    update_cache_mtime_option
+}
+
+# ── Popup: scan + filter ─────────────────────────────────────────────
+# Run nmap, present a multi-select fzf where each row carries an
+# explicit action tag: CURRENT (already a window) or NEW (just found).
+# Ticking acts on the row in the obvious way:
+#   tick CURRENT → kill window + add to ignored
+#   tick NEW     → add window + cache it
+#   untouched    → no-op
+#
+# This avoids relying on fzf's preselect (which is unreliable across
+# many entries and can silently leave the diff thinking "nothing was
+# kept", killing every window and destroying the session).
+popup_scan() {
+    require fzf
+    require nmap
+    read_cache
+    read_ignored
+    scan_subnet
+
+    local -A in_cache=()
+    local -A in_ignored=()
+    local ip
+    for ip in "${ips[@]}";         do in_cache["$ip"]=1; done
+    for ip in "${ignored_ips[@]}"; do in_ignored["$ip"]=1; done
+
+    # Combined list: cache order first, then discovered newcomers.
+    local -a entries=()
+    local -A entry_tag=()
+    for ip in "${ips[@]}"; do
+        entries+=("$ip"); entry_tag["$ip"]="CURRENT"
+    done
+    for ip in "${discovered_ips[@]}"; do
+        [[ -n "${in_cache[$ip]:-}" ]]   && continue
+        [[ -n "${in_ignored[$ip]:-}" ]] && continue
+        entries+=("$ip"); entry_tag["$ip"]="NEW"
+    done
+
+    if [[ ${#entries[@]} -eq 0 ]]; then
+        echo "Nothing to show: no cached hosts, no scan results, all results ignored." >&2
+        return 0
+    fi
+
+    # Padded tag so columns align and awk still sees one token per
+    # field (whitespace-separated).
+    local fzf_input="" name display_name tag
+    for ip in "${entries[@]}"; do
+        name="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
+        display_name="${name:--}"
+        tag="${entry_tag[$ip]}"
+        printf -v fzf_input '%s%-7s  %-15s  %s\n' "$fzf_input" "$tag" "$ip" "$display_name"
+    done
+    fzf_input="${fzf_input%$'\n'}"
+
+    local header
+    header=$'space toggle • tab toggle+down • enter apply • esc cancel\n'
+    header+='tick CURRENT to remove (and ignore)  •  tick NEW to add  •  leave alone for no change'
+
+    # Preview pane: live host-info for the highlighted IP. {2} is the
+    # IP column. Errors absorbed so a slow host doesn't blank fzf.
+    local preview_cmd
+    preview_cmd="'$INFO_SCRIPT' '$default_user' {2} 2>&1 || true"
+
+    local result
+    result=$(printf '%s\n' "$fzf_input" \
+        | fzf --multi --reverse --no-sort --height=100% \
+              --header="$header" --header-first \
+              --preview="$preview_cmd" --preview-window=right:45%:wrap \
+              --bind="space:toggle+down" \
+              --prompt='hosts> ') || {
+        echo "Cancelled. No changes." >&2
+        return 0
+    }
+
+    [[ -z "$result" ]] && { echo "No changes." >&2; return 0; }
+
+    local -a to_add=() to_remove=()
+    local stag sip line
+    while IFS= read -r line; do
+        stag=$(awk '{print $1}' <<<"$line")
+        sip=$(awk '{print $2}' <<<"$line")
+        [[ -z "$sip" ]] && continue
+        case "$stag" in
+            CURRENT) to_remove+=("$sip") ;;
+            NEW)     to_add+=("$sip") ;;
+        esac
+    done <<<"$result"
+
+    apply_scan_diff to_add to_remove
+}
+
+apply_scan_diff() {
+    local -n _to_add=$1
+    local -n _to_remove=$2
+
+    if (( ${#_to_add[@]} == 0 && ${#_to_remove[@]} == 0 )); then
+        echo "No changes." >&2
+        return 0
+    fi
+
+    # Safety net: don't let the apply leave zero hosts. The session
+    # dies when its last window is killed, taking the konsole with
+    # it. If the user really wants a clean slate, --rebuild does it
+    # explicitly.
+    local final_count=$(( ${#ips[@]} - ${#_to_remove[@]} + ${#_to_add[@]} ))
+    if (( final_count <= 0 )); then
+        echo "Refusing: would leave zero hosts (session would self-destruct)." >&2
+        echo "Use 'sshl --rebuild' if you really want to start over." >&2
+        sleep 2.5
+        return 0
+    fi
+
+    local has_session=0
+    session_exists && has_session=1
+    local ip c
+
+    # Remove first so windows freed by removals don't leave stale tabs
+    # visible while the new ones spawn.
+    for ip in "${_to_remove[@]}"; do
+        (( has_session )) && kill_host_window "$ip"
+        local -a new_ips=()
+        for c in "${ips[@]}"; do [[ "$c" != "$ip" ]] && new_ips+=("$c"); done
+        ips=("${new_ips[@]}")
+        ignored_ips+=("$ip")
+        ignored_name["$ip"]="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
+        unset 'cached_name[$ip]'
+    done
+
+    for ip in "${_to_add[@]}"; do
+        (( has_session )) && add_window "$ip"
+        ips+=("$ip")
+        cached_name["$ip"]="${discovered_name[$ip]:-}"
+    done
+
+    write_cache
+    write_ignored
+    refresh_session_options
+    echo "Added ${#_to_add[@]}, removed ${#_to_remove[@]}." >&2
+    # Brief pause so the message is visible before the popup closes.
+    (( has_session )) && sleep 1.2
+}
+
+# ── Popup: reorder ───────────────────────────────────────────────────
+# Hand-rolled keyboard TUI. State machine: nav (cursor moves) and grab
+# (cursor + held item move together). On apply, rewrite ips.cache in
+# the new order and run tmux move-window for any positions that moved.
+popup_reorder() {
+    read_cache
+    if [[ ${#ips[@]} -le 1 ]]; then
+        echo "Need at least 2 hosts to reorder." >&2
+        sleep 1.5
+        return 0
+    fi
+
+    # Snapshot original order so we can compute the move-window diff.
+    local -a original=("${ips[@]}")
+    local -a items=("${ips[@]}")
+    local cursor=0
+    local grabbed=0
+
+    # ANSI helpers. tput hides/shows cursor and uses smcup/rmcup to
+    # save+restore the terminal state so the popup vanishes cleanly.
+    tput smcup 2>/dev/null || true
+    tput civis 2>/dev/null || true
+    # Restore terminal on any exit, including ctrl-c.
+    trap 'tput cnorm 2>/dev/null || true; tput rmcup 2>/dev/null || true' EXIT
+
+    local result=cancelled
+    while true; do
+        _reorder_render "${items[@]}"
+        local key
+        IFS= read -rsn1 key
+        if [[ "$key" == $'\e' ]]; then
+            # Possible escape sequence (arrow keys send ESC [ A/B/...).
+            local seq=""
+            IFS= read -rsn2 -t 0.01 seq || true
+            case "$seq" in
+                "[A") key="up" ;;
+                "[B") key="down" ;;
+                "")   key="esc" ;;
+                *)    continue ;;
+            esac
+        fi
+        case "$key" in
+            up|k)
+                if (( cursor > 0 )); then
+                    if (( grabbed )); then
+                        local tmp="${items[cursor]}"
+                        items[cursor]="${items[cursor-1]}"
+                        items[cursor-1]="$tmp"
+                    fi
+                    ((cursor--))
+                fi
+                ;;
+            down|j)
+                if (( cursor < ${#items[@]} - 1 )); then
+                    if (( grabbed )); then
+                        local tmp="${items[cursor]}"
+                        items[cursor]="${items[cursor+1]}"
+                        items[cursor+1]="$tmp"
+                    fi
+                    ((cursor++))
+                fi
+                ;;
+            ' ')
+                grabbed=$((1 - grabbed))
+                ;;
+            $'\n'|$'\r')
+                result=apply
+                break
+                ;;
+            q|esc)
+                if (( grabbed )); then
+                    grabbed=0
+                else
+                    result=cancelled
+                    break
+                fi
+                ;;
+        esac
+    done
+
+    tput cnorm 2>/dev/null || true
+    tput rmcup 2>/dev/null || true
+    trap - EXIT
+
+    if [[ "$result" != "apply" ]]; then
+        echo "Reorder cancelled." >&2
+        return 0
+    fi
+
+    # Compare against original to find anything that moved. tmux
+    # move-window -s src -t dst moves a window into a slot, shifting
+    # others; re-targeting by display-position-in-current-list is
+    # safer than computing absolute slot numbers up front.
+    local moved=0
+    ips=("${items[@]}")
+    write_cache
+
+    if session_exists; then
+        local i ip wid base_idx
+        # Get the current first window-index (sessions can start at 0
+        # or 1 depending on base-index option).
+        base_idx=$("${TMUX_CMD[@]}" show-option -gv base-index 2>/dev/null || echo 0)
+        for ((i=0; i<${#items[@]}; i++)); do
+            ip="${items[i]}"
+            [[ "${original[i]:-}" == "$ip" ]] && continue
+            wid="$(find_window_id_by_ip "$ip")"
+            [[ -z "$wid" ]] && continue
+            "${TMUX_CMD[@]}" move-window -s "$wid" -t "${session_name}:$((base_idx + i))" 2>/dev/null || true
+            ((moved++))
+        done
+        # tmux renumber-windows packs gaps left by moves so window
+        # indices stay contiguous.
+        "${TMUX_CMD[@]}" set-option -t "=$session_name" renumber-windows on 2>/dev/null || true
+        "${TMUX_CMD[@]}" move-window -r -t "=$session_name" 2>/dev/null || true
+    fi
+
+    refresh_session_options
+    echo "Reordered $moved window(s)." >&2
+    sleep 1.2
+}
+
+_reorder_render() {
+    local items=("$@")
+    local rows
+    rows=$(tput lines 2>/dev/null || echo 24)
+    local cols
+    cols=$(tput cols 2>/dev/null || echo 80)
+
+    tput clear 2>/dev/null || printf '\033[2J\033[H'
+    tput cup 0 0 2>/dev/null || true
+
+    local header_l1="↑/↓ or j/k move cursor • space grab/drop • enter apply • q/esc cancel"
+    local header_l2="grabbed: $([[ $grabbed -eq 1 ]] && echo 'YES — arrows now move the held item' || echo 'no')"
+    printf '%s\n' "$header_l1"
+    printf '%s\n' "$header_l2"
+    printf '%s\n' "$(printf '─%.0s' $(seq 1 $((cols<60?cols:60))))"
+
+    local i ip name marker prefix style reset
+    style=$'\033[7m'   # reverse video (highlighted row)
+    reset=$'\033[0m'
+    local grab_style=$'\033[33;1m'  # bold yellow (held row)
+    for ((i=0; i<${#items[@]}; i++)); do
+        ip="${items[i]}"
+        name="${cached_name[$ip]:-$ip}"
+        if (( i == cursor )); then
+            if (( grabbed )); then
+                marker="${grab_style}>>${reset} "
+                prefix="${grab_style}"
+            else
+                marker="${style}> ${reset}"
+                prefix="${style}"
+            fi
+        else
+            marker="  "
+            prefix=""
+        fi
+        printf '%b%2d  %-15s  %s%b\n' "$prefix" "$((i+1))" "$ip" "$name" "$reset"
+    done
+}
+
+# ── Popup: ignored ───────────────────────────────────────────────────
+# fzf multi-select over ignored.cache. Tick = un-ignore (returns the
+# IP to scan-candidate status; no window added immediately).
+popup_ignored() {
+    require fzf
+    read_ignored
+
+    if [[ ${#ignored_ips[@]} -eq 0 ]]; then
+        echo "No ignored hosts." >&2
+        sleep 1.5
+        return 0
+    fi
+
+    local fzf_input="" ip name
+    for ip in "${ignored_ips[@]}"; do
+        name="${ignored_name[$ip]:--}"
+        printf -v fzf_input '%s%-15s  %s\n' "$fzf_input" "$ip" "$name"
+    done
+    fzf_input="${fzf_input%$'\n'}"
+
+    local header=$'space toggle • tab toggle+down • enter un-ignore • esc cancel\nticked entries return as scan candidates'
+
+    local result
+    result=$(printf '%s\n' "$fzf_input" \
+        | fzf --multi --reverse --no-sort --height=100% \
+              --header="$header" --header-first \
+              --bind="space:toggle+down" \
+              --prompt='ignored> ') || {
+        echo "Cancelled." >&2
+        return 0
+    }
+
+    [[ -z "$result" ]] && { echo "Nothing selected." >&2; return 0; }
+
+    local -A unignore=()
+    local sip line
+    while IFS= read -r line; do
+        sip=$(awk '{print $1}' <<<"$line")
+        [[ -n "$sip" ]] && unignore["$sip"]=1
+    done <<<"$result"
+
+    local -a new_ignored_ips=()
+    for ip in "${ignored_ips[@]}"; do
+        if [[ -n "${unignore[$ip]:-}" ]]; then
+            unset 'ignored_name[$ip]'
+        else
+            new_ignored_ips+=("$ip")
+        fi
+    done
+    ignored_ips=("${new_ignored_ips[@]}")
+    write_ignored
+    echo "Un-ignored ${#unignore[@]} host(s)." >&2
+    sleep 1.2
+}
+
+# ── Hidden subcommand dispatch ───────────────────────────────────────
+case "$mode" in
+    popup-scan)    popup_scan;    exit 0 ;;
+    popup-reorder) popup_reorder; exit 0 ;;
+    popup-ignored) popup_ignored; exit 0 ;;
+esac
+
+# ── Default flow: bootstrap, rebuild, or attach ──────────────────────
+read_cache
+read_ignored
+
 built=false
-if $rebuild || ! session_is_healthy; then
+if $rebuild; then
+    if [[ ${#ips[@]} -eq 0 ]]; then
+        echo "Error: no cache to rebuild from. Run sshl with no args to bootstrap." >&2
+        exit 1
+    fi
     build_session
     built=true
+elif ! session_is_healthy; then
+    if [[ ${#ips[@]} -eq 0 ]]; then
+        # First-run bootstrap: scan, run filter popup in current shell,
+        # then build session from selection.
+        echo "No cached hosts. Running scan + filter to bootstrap..." >&2
+        popup_scan
+        if [[ ${#ips[@]} -eq 0 ]]; then
+            echo "No hosts selected. Re-run sshl when ready." >&2
+            exit 0
+        fi
+        build_session
+        built=true
+    else
+        # Cache exists but session is gone (or never built). Build.
+        build_session
+        built=true
+    fi
 fi
 
-# Warm the host-info cache for every host in parallel so window
-# switches hit the cache immediately. Each fetch runs apt-get update
-# on the remote, so this is real work. Backgrounding lets the user
-# attach to tmux without waiting on it.
-echo "Warming host-info cache for ${#ips[@]} host(s) in background..."
+# Warm host-info cache so window switches hit a fresh entry. Each
+# fetch runs apt-get update on the remote, so this is real work.
+# Backgrounding lets the user attach without waiting.
+echo "Warming host-info cache for ${#ips[@]} host(s) in background..." >&2
 for ip in "${ips[@]}"; do
     u="${host_user[$ip]:-$default_user}"
     "$INFO_SCRIPT" "$u" "$ip" >/dev/null 2>&1 &
@@ -360,20 +843,24 @@ done
 disown -a 2>/dev/null || true
 
 # Reload conf so edits to homelab.tmux.conf take effect without --rebuild.
-# (-f on the first new-session is ignored if the server was already up.)
-"${TMUX_CMD[@]}" source-file "$TMUX_CONF"
+"${TMUX_CMD[@]}" source-file "$TMUX_CONF" 2>/dev/null || true
+
+# Refresh the global env each run. New popups spawn fresh shells that
+# inherit this env, so the popup bindings find $SSHL_BIN / $SSHL_CACHE
+# even on sessions built by an older sshl that never set them.
+session_exists && set_session_env
 
 $built || echo "Reusing existing session '$session_name' (use --rebuild to recreate)."
 
-# Grouped-attach command: creates a new group member sharing the base
-# session's windows but with its own focus, then sets destroy-unattached
-# so the view cleans up when the terminal closes.
+# Grouped attach: a new session sharing the base session's windows but
+# with its own focus. destroy-unattached cleans up when the konsole
+# closes.
 attach_cmd=("${TMUX_CMD[@]}" new-session -t "$session_name" \;
             set-option destroy-unattached on)
 
 if [[ -n "${TMUX:-}" ]]; then
     echo "Already inside a tmux session (different server)."
-    echo "Run this from a fresh terminal, or: tmux -L $SOCKET new-session -t $session_name"
+    echo "Run from a fresh terminal, or: tmux -L $SOCKET new-session -t $session_name"
 elif command -v "$terminal" &>/dev/null; then
     "$terminal" -e "${attach_cmd[@]}" &
     disown
