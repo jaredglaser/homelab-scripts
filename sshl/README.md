@@ -34,13 +34,13 @@ Active inside the tmux session:
 
 | Key | Action |
 |-----|--------|
-| `<prefix> S` | Scan + filter popup. Cached hosts appear pre-checked, newly-discovered hosts unchecked, ignored hosts hidden. Confirm = kill windows for unticked, add windows for newly-ticked, write changes to `ips.cache` and `ignored.cache`. |
-| `<prefix> O` | Reorder popup. Arrow keys / `j`/`k` move the cursor; `space` to grab the highlighted host, arrows to move it, `space` to drop, `enter` to apply, `q`/`esc` to cancel. |
+| `<prefix> S` | Scan + filter popup. Each row is tagged CURRENT (already a window) or NEW (just found by the scan). Tick a CURRENT to remove its window and add the IP to `ignored.cache`. Tick a NEW to add a window for it. Untouched rows are no-ops. Ignored hosts are hidden. |
+| `<prefix> O` | Reorder popup. Arrow keys or `j`/`k` move the cursor. Press `space` to grab the highlighted host, arrows to move it, `space` again to drop, `enter` to apply, `q`/`esc` to cancel. |
 | `<prefix> I` | Show ignored hosts. Tick to un-ignore (returns them to the next scan as candidates). |
-| `<prefix> H` | Fuzzy host picker, jump to selected window |
+| `<prefix> H` | Fuzzy host picker, jumps to selected window |
 | `<prefix> r` | Respawn dead pane and force-refresh host info |
 | `↻` (status bar) | Force-refresh host info for the current window |
-| Mouse | Enabled; click window tabs to switch hosts |
+| Mouse | Click window tabs to switch hosts |
 
 > [!NOTE]
 > The script runs on a dedicated socket (`tmux -L homelab`) and won't affect your normal tmux sessions. Mouse support is enabled within the session by `homelab.tmux.conf`. The default tmux prefix is `Ctrl+b` (`<prefix>` in the keybindings above). If you've changed yours in `~/.tmux.conf`, use that instead.

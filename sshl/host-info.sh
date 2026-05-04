@@ -7,8 +7,8 @@
 # data (possibly stale) or a loading placeholder, while SSH fires in a
 # backgrounded subshell. A marker file prevents duplicate concurrent
 # fetches and also drives the in-flight spinner animation. Cached
-# results live in ${TMPDIR:-/tmp}/tmux-homelab-info/<ip> with a 24h TTL; -f
-# bypasses the TTL and triggers an immediate refetch.
+# results live in ${TMPDIR:-/tmp}/tmux-homelab-info/<ip> with a 24h TTL.
+# -f bypasses the TTL and triggers an immediate refetch.
 set -euo pipefail
 
 force=false
@@ -51,7 +51,7 @@ cache_dir="${TMPDIR:-/tmp}/tmux-homelab-info"
 mkdir -p "$cache_dir"
 cache="$cache_dir/$ip"
 marker="$cache.refreshing"
-# 24 hours. Once a day is plenty for update-count drift; the refresh
+# 24 hours. Once a day is plenty for update-count drift. The refresh
 # button (-f) bypasses this whenever you want a right-now check.
 ttl=86400
 
@@ -61,12 +61,12 @@ spinner_frame() {
 }
 
 remote=$(cat <<'REMOTE'
-# Raw uptime in seconds; caller formats + projects it locally so the
+# Raw uptime in seconds. Caller formats and projects it locally so the
 # display can tick between fetches without a round-trip.
 up_sec=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
 [ -z "$up_sec" ] && up_sec="?"
 
-# Privilege-aware apt-update helper. Root runs it directly; non-root
+# Privilege-aware apt-update helper. Root runs it directly. Non-root
 # tries passwordless sudo (-n) and falls through silently if it can't.
 sync_apt() {
     if [ "$(id -u)" = "0" ]; then
@@ -128,7 +128,18 @@ fi
 need_fetch=true
 if [[ -f "$cache" ]]; then
     mtime=$(stat -c %Y "$cache" 2>/dev/null || echo 0)
-    if (( $(date +%s) - mtime < ttl )); then
+    # Use a shorter effective TTL when uptime is unknown (up_sec == "?").
+    # Without this, a transient SSH blip pins the host as unknown for the
+    # full 24h. 5m recovers quickly from a network glitch but avoids
+    # hammering a host that's genuinely down.
+    cached_up=""
+    IFS=$'\t' read -r cached_up _ < "$cache" 2>/dev/null || true
+    if [[ "$cached_up" == "?" ]]; then
+        effective_ttl=300
+    else
+        effective_ttl=$ttl
+    fi
+    if (( $(date +%s) - mtime < effective_ttl )); then
         need_fetch=false
     fi
 fi

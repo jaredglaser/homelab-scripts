@@ -2,4 +2,4 @@ sshl/config
 sshl/ips.cache
 sshl/ignored.cache
 .claude/settings.local.json
-.worktrees/
+.claude/worktrees/

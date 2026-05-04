@@ -22,7 +22,17 @@ pick=$(awk -F'\t' '
 
 ip=$(awk '{print $1}'  <<<"$pick")
 name=$(awk '{print $2}' <<<"$pick")
-target="${name:-$ip}"
-[[ "$target" == "-" ]] && target="$ip"
+display="${name:-$ip}"
+[[ "$display" == "-" ]] && display="$ip"
 
-tmux -L "$socket" select-window -t "=$target" 2>/dev/null || tmux -L "$socket" display-message "Host '$target' not found. Re-scan with --rescan."
+# Target the window by id resolved from @host_ip, not by name. Two
+# hosts with the same short hostname collide under name targeting
+# and tmux picks the first match.
+wid=$(tmux -L "$socket" list-windows -F '#{window_id} #{@host_ip}' 2>/dev/null \
+      | awk -v ip="$ip" '$2 == ip {print $1; exit}')
+
+if [[ -n "$wid" ]]; then
+    tmux -L "$socket" select-window -t "$wid"
+else
+    tmux -L "$socket" display-message "Host '$display' not found. Use <prefix> S to rescan."
+fi
