@@ -610,15 +610,21 @@ popup_reorder() {
         local key
         IFS= read -rsn1 key
         if [[ "$key" == $'\e' ]]; then
-            # Possible escape sequence (arrow keys send ESC [ A/B/...).
-            local seq=""
-            IFS= read -rsn2 -t 0.01 seq || true
-            case "$seq" in
-                "[A") key="up" ;;
-                "[B") key="down" ;;
-                "")   key="esc" ;;
-                *)    continue ;;
-            esac
+            # Arrow keys send a 3-byte escape sequence: ESC, then '[' or
+            # 'O', then a direction letter. Read the next two chars with
+            # a forgiving timeout.
+            local c1="" c2=""
+            IFS= read -rsn1 -t 0.1  c1 || c1=""
+            if [[ -z "$c1" ]]; then
+                key="esc"
+            else
+                IFS= read -rsn1 -t 0.05 c2 || c2=""
+                case "$c1$c2" in
+                    "[A"|"OA") key="up" ;;
+                    "[B"|"OB") key="down" ;;
+                    *)         continue ;;  # unknown sequence; ignore
+                esac
+            fi
         fi
         case "$key" in
             up|k)
@@ -638,13 +644,13 @@ popup_reorder() {
                         items[cursor]="${items[cursor+1]}"
                         items[cursor+1]="$tmp"
                     fi
-                    ((cursor++))
+                    (( ++cursor ))
                 fi
                 ;;
             ' ')
                 grabbed=$((1 - grabbed))
                 ;;
-            $'\n'|$'\r')
+            ''|$'\n'|$'\r')
                 result=apply
                 break
                 ;;
@@ -687,7 +693,7 @@ popup_reorder() {
             wid="$(find_window_id_by_ip "$ip")"
             [[ -z "$wid" ]] && continue
             "${TMUX_CMD[@]}" move-window -s "$wid" -t "${session_name}:$((base_idx + i))" 2>/dev/null || true
-            ((moved++))
+            (( ++moved ))
         done
         # tmux renumber-windows packs gaps left by moves so window
         # indices stay contiguous.
