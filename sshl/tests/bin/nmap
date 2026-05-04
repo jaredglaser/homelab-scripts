@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Fake nmap for tests. Parses -oG <path> from args and writes two fake hosts.
+output_file=""
+args=("$@")
+for i in "${!args[@]}"; do
+    if [[ "${args[$i]}" == "-oG" ]]; then
+        output_file="${args[$((i+1))]}"
+        break
+    fi
+done
+
+if [[ -n "$output_file" ]]; then
+    cat > "$output_file" << 'EOF'
+Host: 192.0.2.1 ()	Ports: 22/open/tcp//ssh///
+Host: 192.0.2.2 ()	Ports: 22/open/tcp//ssh///
+EOF
+fi
+exit 0

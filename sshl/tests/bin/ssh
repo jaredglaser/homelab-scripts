@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Fake ssh for tests. Returns fixture hostnames for resolve_remote_hostname calls.
+# Hostname-resolution calls include 'hostname' as a trailing argument.
+for arg in "$@"; do
+    [[ "$arg" == "hostname" ]] || continue
+    for a in "$@"; do
+        case "$a" in
+            *@192.0.2.1) echo "fake-host-01"; exit 0 ;;
+            *@192.0.2.2) echo "fake-host-02"; exit 0 ;;
+            *@192.0.2.3) echo "fake-host-03"; exit 0 ;;
+        esac
+    done
+    echo "fake-host-unknown"
+    exit 0
+done
+# Non-hostname calls (window pane commands): exit immediately
+exit 0
