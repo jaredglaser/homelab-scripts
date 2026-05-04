@@ -2,7 +2,7 @@
 [[ -n "${_SSHL_LIB:-}" ]] && return 0
 _SSHL_LIB=1
 
-SSHL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SSHL_DIR="${SSHL_DIR_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 # SSHL_BIN must be set by the calling script before sourcing this lib.
 # Popup scripts don't set it (they never call set_session_options), so
 # default to empty to satisfy set -u without breaking their use case.
@@ -14,7 +14,7 @@ PICKER="${SSHL_DIR}/host-picker.sh"
 INFO_SCRIPT="${SSHL_DIR}/host-info.sh"
 CACHE_FILE="${SSHL_DIR}/ips.cache"
 IGNORED_FILE="${SSHL_DIR}/ignored.cache"
-SOCKET="homelab"
+SOCKET="${SSHL_SOCKET_OVERRIDE:-homelab}"
 TMUX_CMD=(tmux -L "$SOCKET")
 
 trim() {
