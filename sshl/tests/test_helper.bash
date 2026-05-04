@@ -58,5 +58,6 @@ wait_for_window_count() {
         [[ "$count" -eq "$expected" ]] && return 0
         sleep 0.1
     done
+    echo "Timeout waiting for window count: expected $expected, got $count" >&2
     return 1
 }
