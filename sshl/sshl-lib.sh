@@ -52,11 +52,11 @@ right_cmd='ssh -t {user}@{ip} htop'
 terminal="konsole"
 layout="even-horizontal"
 
-declare -A host_user
-declare -A host_name
-declare -A host_left_cmd
-declare -A host_right_cmd
-declare -A cached_name
+declare -gA host_user
+declare -gA host_name
+declare -gA host_left_cmd
+declare -gA host_right_cmd
+declare -gA cached_name
 
 while IFS= read -r line || [[ -n "$line" ]]; do
     line="${line%%#*}"
@@ -95,9 +95,9 @@ require tmux
 # ignored.cache is the same format. IPs here never reappear as scan
 # candidates until un-ignored via the ignored popup.
 
-declare -a ips=()
-declare -a ignored_ips=()
-declare -A ignored_name
+declare -ga ips=()
+declare -ga ignored_ips=()
+declare -gA ignored_name
 
 read_cache() {
     ips=()
@@ -168,8 +168,8 @@ update_cache_mtime_option() {
     "${TMUX_CMD[@]}" set-option -g @cache_mtime "$mtime" 2>/dev/null || true
 }
 
-declare -a discovered_ips=()
-declare -A discovered_name
+declare -ga discovered_ips=()
+declare -gA discovered_name
 
 resolve_remote_hostname() {
     local ip="$1"
