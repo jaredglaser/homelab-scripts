@@ -5,9 +5,6 @@ A collection of scripts I use to monitor and automate tasks in my homelab enviro
 > [!NOTE]
 > Some scripts make assumptions about the system they're running on. The most notable is **KDE**: scripts that launch a terminal emulator default to `konsole`. Check the config for your script before running it.
 
-> [!WARNING]
-> This repo does not currently have automated tests. I try to include helpful error messages, but edge cases may slip through. Scripts that manipulate tmux sessions are low-risk, so I haven't prioritized testing yet. That will likely change as more scripts are added, especially any that could have real impact if they go wrong.
-
 ## Scripts
 
 ### [sshl](sshl/README.md)
