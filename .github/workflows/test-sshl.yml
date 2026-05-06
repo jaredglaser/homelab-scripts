@@ -1,0 +1,16 @@
+name: Test sshl
+on:
+  push:
+    paths: ['sshl/**', '.github/workflows/test-sshl.yml']
+  pull_request:
+    paths: ['sshl/**', '.github/workflows/test-sshl.yml']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get install -y tmux bats fzf
+      - name: Run sshl tests
+        run: bats sshl/tests/
