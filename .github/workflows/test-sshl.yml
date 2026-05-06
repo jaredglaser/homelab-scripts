@@ -11,6 +11,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get install -y tmux bats fzf
+        run: sudo apt-get install -y tmux bats
+      - name: Install fzf
+        run: |
+          FZF_VER=0.54.3
+          curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VER}/fzf-${FZF_VER}-linux_amd64.tar.gz" \
+            | sudo tar -xzC /usr/local/bin fzf
       - name: Run sshl tests
         run: bats sshl/tests/
