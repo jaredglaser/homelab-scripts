@@ -64,4 +64,6 @@ Use `>&2` for all error and status output. Use `require()` to check dependencies
 
 ## Testing
 
-No automated tests currently. Before adding tests to a script, consider the blast radius: scripts that could cause real damage (data loss, network changes, service disruption) are higher priority than ones like tmux session management that are easily recovered from.
+sshl has a bats-core test suite in `sshl/tests/`. Run it with `bats sshl/tests/`. Tests are isolated via a dedicated tmux socket and temp directory per test — they never touch the real `homelab` session or any real hosts.
+
+Before adding tests to other scripts, consider blast radius: scripts that could cause real damage (data loss, network changes, service disruption) are higher priority than easily-recovered ones.
