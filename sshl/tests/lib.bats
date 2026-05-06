@@ -2,8 +2,6 @@
 
 load test_helper
 
-# ── trim ──────────────────────────────────────────────────────────────────────
-
 @test "trim: strips leading whitespace" {
     result=$(trim "   hello")
     [ "$result" = "hello" ]
@@ -24,8 +22,6 @@ load test_helper
     [ "$result" = "" ]
 }
 
-# ── substitute ────────────────────────────────────────────────────────────────
-
 @test "substitute: replaces {ip}" {
     result=$(substitute "ssh {ip}" "10.0.0.1" "root" "myhost")
     [ "$result" = "ssh 10.0.0.1" ]
@@ -45,8 +41,6 @@ load test_helper
     result=$(substitute "ssh {user}@{ip} # {hostname}" "10.0.0.1" "admin" "box01")
     [ "$result" = "ssh admin@10.0.0.1 # box01" ]
 }
-
-# ── read_cache ────────────────────────────────────────────────────────────────
 
 @test "read_cache: parses ip and name from tab-separated file" {
     printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
@@ -76,8 +70,6 @@ load test_helper
     [ "${ips[0]}" = "192.0.2.1" ]
 }
 
-# ── write_cache ───────────────────────────────────────────────────────────────
-
 @test "write_cache: roundtrips ip and name through read_cache" {
     ips=("192.0.2.1" "192.0.2.2")
     cached_name[192.0.2.1]="fake-host-01"
@@ -97,8 +89,6 @@ load test_helper
     [ ! -s "$SSHL_DIR_OVERRIDE/ips.cache" ]
 }
 
-# ── read_ignored / write_ignored ──────────────────────────────────────────────
-
 @test "read_ignored: parses ignored ips and names" {
     printf '192.0.2.9\told-host\n' > "$SSHL_DIR_OVERRIDE/ignored.cache"
     read_ignored
@@ -116,8 +106,6 @@ load test_helper
     [ "${ignored_ips[0]}" = "192.0.2.9" ]
     [ "${ignored_name[192.0.2.9]}" = "old-host" ]
 }
-
-# ── resolve_hostname ──────────────────────────────────────────────────────────
 
 @test "resolve_hostname: prefers config host_name over cache" {
     host_name[192.0.2.1]="config-name"
@@ -140,8 +128,6 @@ load test_helper
     result=$(resolve_hostname "192.0.2.99")
     [ "$result" = "192.0.2.99" ]
 }
-
-# ── config parsing ────────────────────────────────────────────────────────────
 
 @test "config: unknown key emits a warning to stderr" {
     echo "boguskey=somevalue" >> "$SSHL_DIR_OVERRIDE/config"
