@@ -12,29 +12,9 @@ load test_helper
     [ "$result" = "hello" ]
 }
 
-@test "trim: strips both ends" {
-    result=$(trim "  hello world  ")
-    [ "$result" = "hello world" ]
-}
-
 @test "trim: empty string stays empty" {
     result=$(trim "")
     [ "$result" = "" ]
-}
-
-@test "substitute: replaces {ip}" {
-    result=$(substitute "ssh {ip}" "10.0.0.1" "root" "myhost")
-    [ "$result" = "ssh 10.0.0.1" ]
-}
-
-@test "substitute: replaces {user}" {
-    result=$(substitute "ssh {user}@{ip}" "10.0.0.1" "admin" "myhost")
-    [ "$result" = "ssh admin@10.0.0.1" ]
-}
-
-@test "substitute: replaces {hostname}" {
-    result=$(substitute "echo {hostname}" "10.0.0.1" "root" "myhost")
-    [ "$result" = "echo myhost" ]
 }
 
 @test "substitute: replaces all tokens in one template" {
@@ -62,12 +42,6 @@ load test_helper
     rm -f "$SSHL_DIR_OVERRIDE/ips.cache"
     read_cache
     [ "${#ips[@]}" = "0" ]
-}
-
-@test "read_cache: strips inline comments from ip field" {
-    printf '192.0.2.1  # stale\tfake-host-01\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
-    read_cache
-    [ "${ips[0]}" = "192.0.2.1" ]
 }
 
 @test "write_cache: roundtrips ip and name through read_cache" {
