@@ -49,6 +49,18 @@ wait_for_pane_content() {
     return 1
 }
 
+# Wait for a pane to disappear (its process exited and tmux removed it).
+wait_for_pane_gone() {
+    local pane="$1" timeout="${2:-10}"
+    local i
+    for i in $(seq 1 $(( timeout * 10 ))); do
+        tmux -L "$SOCKET" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qF "$pane" || return 0
+        sleep 0.1
+    done
+    echo "Timeout waiting for pane $pane to disappear" >&2
+    return 1
+}
+
 # Poll window count for session_name until it matches expected, or timeout.
 wait_for_window_count() {
     local expected="$1" timeout="${2:-10}"
