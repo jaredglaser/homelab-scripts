@@ -15,8 +15,18 @@ set -u
 
 FILE="/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm"
 BACKUP_DIR="/var/backups/pve-zfs-L-patch"
-TARGET_PATTERN="my \$cmd = ['zfs', 'send', '-RpvL'"
-ORIGINAL_PATTERN="my \$cmd = ['zfs', 'send', '-Rpv'"
+
+# libpve-storage-perl 9.1.5+ added -U (--skip-missing) to the send flags.
+pkg_ver=$(dpkg-query -W -f='${Version}' libpve-storage-perl 2>/dev/null || true)
+if dpkg --compare-versions "$pkg_ver" ge "9.1.5" 2>/dev/null; then
+    ORIGINAL_PATTERN="my \$cmd = ['zfs', 'send', '-RpvU'"
+    TARGET_PATTERN="my \$cmd = ['zfs', 'send', '-RpvUL'"
+    SED_EXPR="s/my \$cmd = \['zfs', 'send', '-RpvU'\]/my \$cmd = ['zfs', 'send', '-RpvUL']/"
+else
+    ORIGINAL_PATTERN="my \$cmd = ['zfs', 'send', '-Rpv'"
+    TARGET_PATTERN="my \$cmd = ['zfs', 'send', '-RpvL'"
+    SED_EXPR="s/my \$cmd = \['zfs', 'send', '-Rpv'\]/my \$cmd = ['zfs', 'send', '-RpvL']/"
+fi
 
 # Color codes (only if stdout is a terminal)
 if [ -t 1 ]; then
@@ -42,7 +52,7 @@ if grep -qF "$ORIGINAL_PATTERN" "$FILE"; then
     backup="${BACKUP_DIR}/ZFSPoolPlugin.pm.prepatch.$(date +%Y%m%d-%H%M%S)"
     cp -a "$FILE" "$backup"
 
-    if sed -i "s/my \$cmd = \['zfs', 'send', '-Rpv'\]/my \$cmd = ['zfs', 'send', '-RpvL']/" "$FILE"; then
+    if sed -i "$SED_EXPR" "$FILE"; then
         if grep -qF "$TARGET_PATTERN" "$FILE"; then
             echo "${prefix} ${YELLOW}APPLIED${RESET} - patched $FILE to add -L flag (backup: $backup)"
             exit 0
