@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Fake dpkg-query for tests. The script branches on this output, so unlike the
+# fixed-behaviour stubs in sshl/tests/bin this one is driven by the environment.
+#   FAKE_PKG_RAW  - emit this verbatim as the whole output
+#   FAKE_PKG_RC   - 1 means dpkg has no record of the package, 2+ means the query broke
+#   FAKE_PKG_STATE / FAKE_PKG_VER - the two fields of a normal answer
+if [[ -n "${FAKE_PKG_RAW:-}" ]]; then
+    printf '%s' "$FAKE_PKG_RAW"
+    exit "${FAKE_PKG_RC:-0}"
+fi
+
+case "${FAKE_PKG_RC:-0}" in
+    0) printf '%s|%s' "${FAKE_PKG_STATE:-installed}" "${FAKE_PKG_VER:-9.1.5}" ;;
+    1) echo "dpkg-query: no packages found matching ${*: -1}" >&2; exit 1 ;;
+    *) echo "dpkg-query: error: unable to read database" >&2; exit "${FAKE_PKG_RC}" ;;
+esac
