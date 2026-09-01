@@ -64,6 +64,9 @@ Use `>&2` for all error and status output. Use `require()` to check dependencies
 
 ## Testing
 
-sshl has a bats-core test suite in `sshl/tests/`. Run it with `bats sshl/tests/`. Each test uses a dedicated tmux socket and temp directory and never touches the real `homelab` session or any real hosts.
+Two scripts have bats-core suites, both run from the repo root:
+
+- `bats sshl/tests/` gives each test its own tmux socket and temp directory and sets `session_name=test-homelab`, so it cannot reach the real `homelab` session. It also stubs `nmap` and `ssh` on PATH, so it cannot reach a real host.
+- `bats pve-zfs-large-block-patch/tests/` points the script at a temp directory through its `PVE_ZFS_PATCH_*_OVERRIDE` variables and stubs `dpkg-query` and `logger` on PATH. The script falls back to the real `/usr/share/perl5` path when those variables are empty, so `setup()` confirms `mktemp -d` worked before exporting them.
 
 Before adding tests to other scripts, consider blast radius: scripts that could cause real damage (data loss, network changes, service disruption) are higher priority than easily-recovered ones.

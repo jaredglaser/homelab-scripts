@@ -1,0 +1,3 @@
+#!/usr/bin/env bash
+# Fake logger for tests. Appends the message so the syslog path can be asserted.
+printf '%s\n' "${*: -1}" >> "${FAKE_SYSLOG:-/dev/null}"
