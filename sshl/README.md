@@ -56,7 +56,7 @@ Active inside the tmux session:
 | `<prefix> O` | Reorder popup. Arrow keys or `j`/`k` move the cursor. Press `space` to grab the highlighted host, arrows to move it, `space` again to drop, `enter` to apply, `q`/`esc` to cancel. |
 | `<prefix> I` | Show ignored hosts. Tick to un-ignore (returns them to the next scan as candidates). |
 | `<prefix> H` | Fuzzy host picker, jumps to selected window |
-| `<prefix> r` | Respawn the active pane if it is dead, and force-refresh host info. A live pane keeps running. |
+| `<prefix> r` | Respawn the window's dead panes, and force-refresh host info. Live panes keep running. A pane stays on screen after its command exits, even cleanly, so a host's window only goes away through `<prefix> S`. |
 | `↻` (status bar) | Force-refresh host info for the current window |
 | Mouse | Click window tabs to switch hosts |
 
