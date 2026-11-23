@@ -344,7 +344,7 @@ add_window() {
             return 1
         }
     else
-        wid=$("${TMUX_CMD[@]}" new-window -t "=$session_name" -n "$name" \
+        wid=$("${TMUX_CMD[@]}" new-window -t "=$session_name:" -n "$name" \
             -P -F '#{window_id}' "${env_args[@]}" "$left") || {
             echo "Warning: failed to create window for $ip ($name), skipping" >&2
             return 1
