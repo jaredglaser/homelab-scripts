@@ -20,6 +20,8 @@ sshl/tests/lab/lab.sh up
 | iot01 | 172.30.0.16 | key refused | a host nothing can name (listed by IP) |
 | off01 | 172.30.0.17 | no sshd | must not appear in a scan |
 
+Each host has its own SSH host keys. `lab.sh many N` starts N more apt hosts (`many01` and up, root with a key) on `172.30.0.101` and up for scale tests, and `lab.sh rekey NAME` gives a host new host keys, as a reinstall would.
+
 db01 and nas01 need `host.172.30.0.11.user=opsudo` and `host.172.30.0.12.user=ops` in the config.
 
 ## Driving it
@@ -33,6 +35,9 @@ $L click 270 500                 # a mouse click at window coordinates
 $L shot /tmp/step.png            # screenshot of the newest konsole window
 $L tmux list-windows -t =homelab # tmux -L homelab as sshlab
 $L as cat ~/.ssh/known_hosts     # any command as sshlab
+$L many 50                       # 50 more hosts on 172.30.0.101-150
+$L rekey pi01                    # new host keys for pi01
+docker pause pi01                # a host that stops answering mid-session
 $L down                          # close konsoles, kill the sshl server, stop the hosts
 ```
 
@@ -41,6 +46,8 @@ Look at the screenshots: a wrong message, a cut-off status line or a popup that 
 ## Things to know
 
 - The desktop runs with `LANG=C.UTF-8`. Without a UTF-8 locale tmux draws `●`, `↻` and the spinner as `_`, which is what a user without one would see too.
+- Docker Hub answers `429 Too Many Requests` when many sessions share an address. `up` then pulls the base images from `mirror.gcr.io`.
+- A container shares the VM's kernel, so `docker restart` drops every SSH session like a reboot but does not reset the uptime the status row shows.
 - Behind an HTTPS-only proxy on loopback, as in a Claude Code cloud session, `up` builds with `--network host`, switches the images to `https://` Ubuntu mirrors, trusts the proxy CA from `LAB_CA_FILE` (default `/root/.ccr/ca-bundle.crt`), and forwards the proxy port to the lab gateway with socat so `apt-get update` inside the hosts works.
 - The no-apt hosts are the Ubuntu image with `apt` and `apt-get` renamed, because Alpine's package mirror is not reachable from every cloud environment. They exercise the same branch of `host-info.sh`.
 - Run `lab.sh` as root. Everything sshl itself runs as `sshlab`, never as root, because that is how it is used.

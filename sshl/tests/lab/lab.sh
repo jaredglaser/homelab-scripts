@@ -44,6 +44,8 @@ ca_file() {
 
 cmd_deps() {
     need_root
+    # A fresh VM has no package lists yet, so install finds nothing.
+    apt-get update -qq >/dev/null
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
         konsole xvfb xdotool x11-utils x11-apps imagemagick dbus-x11 fonts-dejavu-core \
         openssh-client nmap socat tmux bats shellcheck curl ca-certificates iproute2 >/dev/null
@@ -56,6 +58,15 @@ cmd_deps() {
         tar -xzf "$LAB_STATE/fzf.tgz" -C "$LAB_STATE/bin" fzf
     fi
     echo "deps ok: $(tmux -V), fzf $("$LAB_STATE/bin/fzf" --version | cut -d' ' -f1), $(nmap --version | head -1)"
+}
+
+# Docker Hub answers 429 when many sessions share one address. Google's
+# mirror of the official images serves the same image.
+pull_image() {
+    docker image inspect "$1" >/dev/null 2>&1 && return 0
+    docker pull -q "$1" >/dev/null 2>&1 && return 0
+    docker pull -q "mirror.gcr.io/library/$1" >/dev/null || die "could not pull $1"
+    docker tag "mirror.gcr.io/library/$1" "$1"
 }
 
 cmd_docker() {
@@ -92,11 +103,12 @@ EOF
 FROM sshl-lab-apt
 RUN mv /usr/bin/apt /usr/bin/apt.hidden && mv /usr/bin/apt-get /usr/bin/apt-get.hidden
 EOF
+    pull_image ubuntu:24.04
     docker image inspect sshl-lab-apt >/dev/null 2>&1 || \
         docker build -q --network host --build-arg https_proxy="$proxy" -t sshl-lab-apt "$build/apt" >/dev/null
     docker image inspect sshl-lab-noapt >/dev/null 2>&1 || \
         docker build -q -t sshl-lab-noapt "$build/noapt" >/dev/null
-    docker image inspect alpine:3.20 >/dev/null 2>&1 || docker pull -q alpine:3.20 >/dev/null
+    pull_image alpine:3.20
     echo "images ok"
 }
 
@@ -123,29 +135,75 @@ cmd_hosts() {
             (socat "TCP-LISTEN:$port,bind=$LAB_GW,reuseaddr,fork" "TCP:127.0.0.1:$port" >/dev/null 2>&1 &)
         proxy="http://$LAB_GW:$port"
     fi
-    local spec name ip image user key home
+    local spec name ip image user key
     for spec in "${HOSTS[@]}"; do
         read -r name ip image user key <<<"$spec"
-        if ! docker container inspect "$name" >/dev/null 2>&1; then
-            docker run -d --name "$name" --hostname "$name" --network "$LAB_NET" --ip "$ip" "$image" >/dev/null
-        fi
-        docker start "$name" >/dev/null
-        if [[ "$key" == key ]]; then
-            home="/home/$user"; [[ "$user" == root ]] && home=/root
-            docker exec "$name" install -d -m 700 -o "$user" -g "$user" "$home/.ssh"
-            docker exec -i "$name" tee "$home/.ssh/authorized_keys" < "$LAB_HOME/.ssh/id_ed25519.pub" >/dev/null
-            docker exec "$name" chown "$user:$user" "$home/.ssh/authorized_keys"
-            docker exec "$name" chmod 600 "$home/.ssh/authorized_keys"
-        fi
-        if [[ "$image" == sshl-lab-apt && -n "$proxy" ]]; then
-            docker exec "$name" sed -i "s#^Acquire::https::Proxy .*#Acquire::https::Proxy \"$proxy\";#" /etc/apt/apt.conf.d/90proxy
-        fi
+        start_host "$name" "$ip" "$image" "$user" "$key" "$proxy"
     done
     docker container inspect off01 >/dev/null 2>&1 || \
         docker run -d --name off01 --hostname off01 --network "$LAB_NET" --ip 172.30.0.17 alpine:3.20 sleep infinity >/dev/null
     docker start off01 >/dev/null
     grep -q " cam01.lab$" /etc/hosts || echo "172.30.0.15 cam01.lab" >> /etc/hosts
     echo "hosts ok"
+}
+
+# The image build generates one set of host keys, so every container would
+# share them and recreating one would not change its key. Each new
+# container gets its own.
+start_host() {
+    local name="$1" ip="$2" image="$3" user="$4" key="$5" proxy="$6" home
+    if ! docker container inspect "$name" >/dev/null 2>&1; then
+        docker run -d --name "$name" --hostname "$name" --network "$LAB_NET" --ip "$ip" "$image" >/dev/null
+        rekey_host "$name"
+    fi
+    docker start "$name" >/dev/null
+    if [[ "$key" == key ]]; then
+        home="/home/$user"; [[ "$user" == root ]] && home=/root
+        docker exec "$name" install -d -m 700 -o "$user" -g "$user" "$home/.ssh"
+        docker exec -i "$name" tee "$home/.ssh/authorized_keys" < "$LAB_HOME/.ssh/id_ed25519.pub" >/dev/null
+        docker exec "$name" chown "$user:$user" "$home/.ssh/authorized_keys"
+        docker exec "$name" chmod 600 "$home/.ssh/authorized_keys"
+    fi
+    if [[ "$image" == sshl-lab-apt && -n "$proxy" ]]; then
+        docker exec "$name" sed -i "s#^Acquire::https::Proxy .*#Acquire::https::Proxy \"$proxy\";#" /etc/apt/apt.conf.d/90proxy
+    fi
+}
+
+rekey_host() {
+    docker exec "$1" sh -c 'rm -f /etc/ssh/ssh_host_* && ssh-keygen -A >/dev/null'
+    docker restart -t 1 "$1" >/dev/null
+}
+
+lab_proxy() {
+    local proxy port
+    proxy="$(proxy_url)"
+    if [[ "$proxy" =~ ^https?://(127\.0\.0\.1|localhost):([0-9]+) ]]; then
+        port="${BASH_REMATCH[2]}"
+        proxy="http://$LAB_GW:$port"
+    fi
+    printf '%s' "$proxy"
+}
+
+# Gives a host new SSH host keys, as a reinstall would.
+cmd_rekey() {
+    need_root
+    local name="${1:?usage: lab.sh rekey NAME}"
+    rekey_host "$name"
+    echo "$name has new host keys"
+}
+
+# Starts N more apt hosts (key login as root) named many01.. on
+# 172.30.0.101 and up, for scale tests. down stops them too.
+cmd_many() {
+    need_root
+    local n="${1:?usage: lab.sh many N}" i name
+    (( n >= 1 && n <= 150 )) || die "N must be 1 to 150"
+    for ((i = 1; i <= n; i++)); do
+        printf -v name 'many%02d' "$i"
+        start_host "$name" "172.30.0.$((100 + i))" sshl-lab-apt root key "$(lab_proxy)" &
+    done
+    wait
+    echo "started $n extra hosts on 172.30.0.101-$((100 + n))"
 }
 
 cmd_display() {
@@ -247,6 +305,7 @@ cmd_down() {
         read -r name _ <<<"$spec"
         docker stop -t 1 "$name" >/dev/null 2>&1 || true
     done
+    docker ps -q --filter name='^many[0-9]+$' | xargs -r docker stop -t 1 >/dev/null
     echo "konsoles closed, tmux server killed, hosts stopped. lab.sh up starts them again."
 }
 
@@ -255,6 +314,8 @@ usage() {
 Usage: lab.sh COMMAND
   up                 everything below, in order, then check
   deps docker user hosts display install check
+  many N             start N more hosts on 172.30.0.101 and up
+  rekey NAME         give a host new SSH host keys
   konsole [CMD...]   open a konsole as $LAB_USER (optionally running CMD)
   windows            list konsole windows
   shot FILE [WIN]    screenshot the newest konsole window
@@ -270,7 +331,7 @@ EOF
 main() {
     local cmd="${1:-}"; shift || true
     case "$cmd" in
-        up|deps|docker|user|hosts|display|install|check|konsole|windows|shot|keys|type|click|as|tmux|down)
+        up|deps|docker|user|hosts|display|install|check|many|rekey|konsole|windows|shot|keys|type|click|as|tmux|down)
             "cmd_$cmd" "$@" ;;
         *) usage; [[ -z "$cmd" || "$cmd" == -h || "$cmd" == --help ]] || exit 1 ;;
     esac
