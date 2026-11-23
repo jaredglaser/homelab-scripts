@@ -20,7 +20,7 @@ sshl/tests/lab/lab.sh up
 | iot01 | 172.30.0.16 | key refused | a host nothing can name (listed by IP) |
 | off01 | 172.30.0.17 | no sshd | must not appear in a scan |
 
-db01 and nas01 need `host.172.30.0.11.user=opsudo` and `host.172.30.0.12.user=ops` in the config.
+The config needs `subnet=172.30.0.0/24`. db01 and nas01 need `host.172.30.0.11.user=opsudo` and `host.172.30.0.12.user=ops` too.
 
 ## Driving it
 
