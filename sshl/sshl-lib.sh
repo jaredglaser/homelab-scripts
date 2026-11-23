@@ -125,6 +125,7 @@ read_ignored() {
         c_name="$(trim "$c_name")"
         [[ -z "$c_ip" ]] && continue
         ignored_ips+=("$c_ip")
+        # shellcheck disable=SC2034  # write_ignored reads it through a nameref
         if [[ -n "$c_name" ]]; then ignored_name["$c_ip"]="$c_name"; fi
     done < "$IGNORED_FILE"
 }
