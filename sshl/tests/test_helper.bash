@@ -4,6 +4,9 @@ setup() {
 
     export SSHL_DIR_OVERRIDE
     SSHL_DIR_OVERRIDE="$(mktemp -d)"
+    # sshl-lib.sh falls back to the real sshl directory and the real homelab
+    # socket when the overrides are empty, which is what a failed mktemp gives.
+    [ -d "$SSHL_DIR_OVERRIDE" ] || { echo "mktemp -d failed" >&2; return 1; }
     export SSHL_SOCKET_OVERRIDE
     SSHL_SOCKET_OVERRIDE="sshl-test-$$-${BATS_TEST_NUMBER:-0}"
 
