@@ -293,3 +293,15 @@ row_of() {
     popup_scan 2>/dev/null
     grep -Eq '^CURRENT +192\.0\.2\.1 +pinned$' "$SSHL_DATA_DIR_OVERRIDE/fzf.in"
 }
+
+@test "popup_scan: a ticked row is marked with a visible character" {
+    require_popup_fzf
+    build_one_host_session
+    pane=$(start_popup)
+    wait_for_info "$pane" 2 0
+    tmux -L "$SOCKET" send-keys -t "$pane" " "
+    wait_for_info "$pane" 2 1
+    tmux -L "$SOCKET" capture-pane -t "$pane" -p | grep -Eq '^ ?\+ ?CURRENT +192\.0\.2\.1 '
+    tmux -L "$SOCKET" send-keys -t "$pane" Escape
+    wait_for_popup_exit "$pane" 0
+}
