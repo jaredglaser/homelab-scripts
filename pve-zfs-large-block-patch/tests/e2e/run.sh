@@ -3,16 +3,16 @@
 # packages in it and runs walkthrough.sh. Needs Docker and root (the
 # container is privileged for mounts, chattr and FUSE).
 #
-#   REV=<commit> run.sh   install the script from GitHub at that commit
-#   run.sh                install this working tree's copy
-#   KEEP=1 run.sh         leave the container running for inspection
+#   BRANCH=<branch> run.sh   install with the one-liner from that pushed branch
+#                            (default: the current branch)
+#   KEEP=1 run.sh            leave the container running for inspection
 #
 # Behind an HTTPS proxy, export https_proxy and set E2E_CA_BUNDLE to the
 # proxy's CA file; the container then shares the host network.
 set -euo pipefail
 
 here="$(cd "$(dirname "$0")" && pwd)"
-script="$here/../../pve-zfs-large-block-patch.sh"
+branch="${BRANCH:-$(git -C "$here" rev-parse --abbrev-ref HEAD)}"
 name=pve-zfs-e2e
 image=pve-zfs-e2e
 logs="${E2E_LOGS:-$(mktemp -d)}"
@@ -24,6 +24,11 @@ revs=(e17a33794c34 c705a2c03f2c HEAD)
 
 src=$(mktemp -d)
 trap 'rm -rf "$src"; [ "${KEEP:-}" = 1 ] || docker rm -f "$name" >/dev/null 2>&1 || true' EXIT
+# The installed script must match the pushed branch, which catches a stale
+# raw.githubusercontent.com cache as well as an unpushed change.
+git -C "$here" fetch -q origin "$branch"
+git -C "$here" show "FETCH_HEAD:pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh" > "$src/expected-script"
+echo "testing branch $branch at $(git -C "$here" rev-parse --short FETCH_HEAD)" >&2
 for rev in "${revs[@]}"; do
     curl -fsS -o "$src/ZFSPoolPlugin.pm.$rev" \
         "https://git.proxmox.com/?p=pve-storage.git;a=blob_plain;f=src/PVE/Storage/ZFSPoolPlugin.pm;hb=$rev"
@@ -56,11 +61,11 @@ docker cp "$src" "$name:/root/upstream"
 docker cp "$here/build-debs.sh" "$name:/root/"
 docker cp "$here/walkthrough.sh" "$name:/root/"
 docker cp "$here/eio-fs.py" "$name:/root/"
-docker cp "$script" "$name:/root/script-under-test"
+docker cp "$src/expected-script" "$name:/root/expected-script"
 docker exec "$name" /root/build-debs.sh /root/upstream >/dev/null
 
 rc=0
-docker exec "${envs[@]}" -e "REV=${REV:-}" "$name" /root/walkthrough.sh || rc=$?
+docker exec "${envs[@]}" -e "BRANCH=$branch" "$name" /root/walkthrough.sh || rc=$?
 
 docker cp "$name:/root/e2e-logs/." "$logs"
 echo "per-step command output: $logs" >&2

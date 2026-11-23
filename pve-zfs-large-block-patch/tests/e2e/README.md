@@ -1,32 +1,11 @@
-# End-to-end check for pve-zfs-large-block-patch
+# End-to-end check
 
-Runs the script the way an operator lives with it: installed per the README, fired by a real apt `DPkg::Post-Invoke` hook, against real `libpve-storage-perl` packages served by a local apt repository, with journald collecting its syslog lines. The bats suite in `tests/` does not run this; it needs Docker, root and network access.
+Installs the script with the README's one-liner on a stand-in Proxmox node and walks every state the README describes, through real apt, dpkg and journald.
 
 ```bash
-pve-zfs-large-block-patch/tests/e2e/run.sh              # this working tree's script
-REV=<full commit hash> pve-zfs-large-block-patch/tests/e2e/run.sh   # the README's curl at that commit
-KEEP=1 pve-zfs-large-block-patch/tests/e2e/run.sh       # leave the container up afterwards
+BRANCH=<pushed branch> pve-zfs-large-block-patch/tests/e2e/run.sh
 ```
 
-It prints `PASS` or `FAIL` per check, exits 1 if any failed, and names a directory holding each step's command and full output. Behind an HTTPS proxy, export `https_proxy` and set `E2E_CA_BUNDLE` to the proxy's CA file.
+Needs Docker, root and network access. It tests what is pushed to `BRANCH` (default: the current branch), because the one-liner fetches from GitHub. It prints `PASS` or `FAIL` per check and exits 1 on any failure. Behind an HTTPS proxy, export `https_proxy` and set `E2E_CA_BUNDLE` to the proxy's CA file. `KEEP=1` leaves the container running.
 
-## The stand-in node
-
-- `Dockerfile`: Ubuntu 24.04 with systemd and journald as PID 1, so `logger` lands where `journalctl -t pve-zfs-L-patch` reads it. Ubuntu because Debian mirrors were not reachable from the VM this was built in; the script only uses dpkg, apt, coreutils, sed and grep, which behave the same here. The container runs privileged for the tmpfs, bind and FUSE mounts and for `chattr`.
-- `build-debs.sh`: builds `libpve-storage-perl` packages that ship only `ZFSPoolPlugin.pm`, from upstream `pve-storage.git`, fetched by `run.sh`:
-
-  | Version | Upstream commit | Send flags |
-  | --- | --- | --- |
-  | 9.1.2 | `e17a33794c34`, the file as shipped up to 9.1.2 | `-Rpv` |
-  | 9.1.3 | `c705a2c03f2c`, which added `-U` | `-RpvU` |
-  | 9.1.23 | `HEAD` as of 2026-11-23 | `-RpvU` |
-
-  Three synthetic variants of HEAD reach the `WARNING` states: `9.1.23+syn.moved` ships the file under another name, `9.1.23+syn.shape` changes the flags to `-RpvUw`, and `9.1.23+syn.extra` adds a second send call without `-L`. They are pinned below the real versions, so only an explicit `libpve-storage-perl=<version>` installs one.
-
-  Each package has a conffile, so `apt remove` leaves the `config-files` state, and activates the `pve-api-updates` trigger as upstream does. A stand-in `pve-manager` declares interest in that trigger as upstream does, so apt prints `Processing triggers for pve-manager` before the hook output, as in the README's sample. `e2e-poke` is an unrelated package to reinstall when a check needs the hook to fire.
-- `eio-fs.py`: a one-file FUSE filesystem whose reads fail with EIO, bind-mounted over the target to give the script a real read error. The VM kernel has no device-mapper, so dm-error was not an option.
-- `walkthrough.sh`: the checks, in README order: install and first run, the README's verify steps, upgrades, downgrades and reinstalls, `dpkg -i`, each `WARNING`, the hook without `|| true`, the script missing, without its execute bit or on a `noexec` mount, an immutable target, a read-only `/usr/share/perl5`, a full backup directory, a full `/tmp`, a read error, the other `FAILED` states, `apt remove` and `purge`, Recovery and Uninstall.
-
-## Not covered
-
-Real Proxmox daemons and replication: the stand-in `pve-manager` has no postinst. A read error that starts after `sed` has rewritten the file: that needs a writable FUSE filesystem that supports rename, so only the bats suite covers it, with a stub.
+The node is Ubuntu 24.04 with systemd as PID 1. `build-debs.sh` builds `libpve-storage-perl` 9.1.2, 9.1.3 and 9.1.23 from upstream `ZFSPoolPlugin.pm`, plus pinned-down synthetic versions for the `WARNING` states. `eio-fs.py` provides a file whose reads fail.

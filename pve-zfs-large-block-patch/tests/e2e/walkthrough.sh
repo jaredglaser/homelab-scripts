@@ -3,12 +3,15 @@
 # README as an operator would and checks each claim against real apt, dpkg
 # and journald. Prints PASS or FAIL per check and exits 1 if any failed.
 #
-# REV set: install the script with the README's curl command at that commit.
-# REV unset: install /root/script-under-test instead (the working tree copy).
+# BRANCH is the pushed branch the one-liner installs from. run.sh copies
+# that branch's script to /root/expected-script, to catch a stale fetch.
 # Checks pass single-quoted conditions to eval so they expand at check time.
 # shellcheck disable=SC2016
 set -u
 umask 022
+
+BRANCH="${BRANCH:?set BRANCH to the pushed branch to install from}"
+INSTALL_URL="https://raw.githubusercontent.com/jaredglaser/homelab-scripts/$BRANCH/pve-zfs-large-block-patch/install.sh"
 
 S=/usr/local/sbin/pve-zfs-large-block-patch.sh
 H=/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch
@@ -68,25 +71,27 @@ DPkg::Post-Invoke {
 EOF
 }
 
+# The README's one-liner, with the branch in place of main.
+# shellcheck disable=SC2120 # arguments come through run one_liner --uninstall
+one_liner() { curl -fsSL "$INSTALL_URL" | PVE_ZFS_PATCH_BRANCH="$BRANCH" bash -s -- "$@"; }
+hook_is_verbatim() { cmp -s "$H" <(hook_verbatim_text); }
+hook_verbatim_text() { printf 'DPkg::Post-Invoke {\n    "/usr/local/sbin/pve-zfs-large-block-patch.sh || true";\n};\n'; }
+
 apt_q update >/dev/null 2>&1
 apt_q install pve-manager e2e-poke >/dev/null 2>&1
 
-section "Install per README with libpve-storage-perl 9.1.3"
+section "Install with the one-liner (BRANCH=$BRANCH)"
 pkg_install 9.1.3 >/dev/null 2>&1
-if [ -n "${REV:-}" ]; then
-    echo "installing the script from GitHub at REV=$REV"
-    curl -fsSL -o /usr/local/sbin/pve-zfs-large-block-patch.sh \
-        "https://raw.githubusercontent.com/jaredglaser/homelab-scripts/${REV}/pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh"
-    check "curl at the pinned REV downloaded a bash script" grep -q '^#!/bin/bash' "$S"
-else
-    echo "installing the working tree copy of the script"
-    cp /root/script-under-test "$S"
-fi
-chmod +x "$S"
-hook_verbatim
+run setpriv --reuid=65534 --regid=65534 --clear-groups bash -c 'curl -fsSL "$1" | bash' _ "$INSTALL_URL"
+check "not root: refused with exit 1" eval 'rc_is 1 && has "FAILED - must run as root"'
+check "not root: nothing installed" eval '[ ! -e "$S" ] && [ ! -e "$H" ]'
 mark
-run "$S"
-check "first run says APPLIED and exits 0" eval 'rc_is 0 && has "APPLIED - patched $F to add -L flag"'
+run one_liner
+check "fresh node: exits 0, installs the script and writes the hook" eval 'rc_is 0 && has "script installed from $BRANCH" && has "apt hook written"'
+check "installed script is the one on the branch" cmp "$S" /root/expected-script
+check "installed script is executable" test -x "$S"
+check "hook matches the README's manual hook" hook_is_verbatim
+check "first run says APPLIED" has "APPLIED - patched $F to add -L flag"
 check "file now has -RpvUL" flags_are -RpvUL
 check "one backup, identical to the packaged file" eval '[ "$(backups)" -eq 1 ] && [ "$(md5sum < "$B"/ZFSPoolPlugin.pm.prepatch.* | cut -d" " -f1)" = "$(installed_md5)" ]'
 check "APPLIED is in the journal at notice" journal_has "patched $F to add -L flag" -p notice
@@ -94,7 +99,17 @@ mark
 run "$S"
 check "second run says OK and exits 0" eval 'rc_is 0 && has "OK - patch already present"'
 check "OK is not logged" journal_empty
-check "README's grep shows -RpvUL" eval "grep -F send $F | grep -F \"'zfs'\" | grep -q RpvUL"
+run one_liner
+check "rerun: script and hook already in place, OK" eval 'rc_is 0 && has "script already up to date" && has "apt hook already in place" && has "OK - patch already present"'
+
+section "One-liner over an older install"
+curl -fsSL -o "$S" "https://raw.githubusercontent.com/jaredglaser/homelab-scripts/b51a8762538696a20c9748db3e24892e6349095b/pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh"
+chmod +x "$S"
+hook_verbatim
+check "older script differs from the branch" eval '! cmp -s "$S" /root/expected-script'
+run one_liner
+check "rerun updates the script and keeps the hook" eval 'rc_is 0 && has "script updated from $BRANCH" && has "apt hook already in place"'
+check "script now matches the branch" cmp "$S" /root/expected-script
 
 section "Verify: reinstall of the installed version fires the hook"
 mark
@@ -262,37 +277,35 @@ run "$S"
 check "no dpkg record: exits 0" eval 'rc_is 0 && has "NOT INSTALLED"'
 check "NOT INSTALLED is never logged" journal_empty
 
-section "Recovery per README"
+section "Uninstall and restore per README"
 pkg_install 9.1.3 >/dev/null 2>&1
-check "patched before recovery" flags_are -RpvUL
-rm "$H"
+check "patched before uninstall" flags_are -RpvUL
+# shellcheck disable=SC2034 # read in a check's eval
+nb=$(backups)
+run one_liner --uninstall
+check "--uninstall removes the hook, then the script" eval 'rc_is 0 && [[ "$out" == *"removed $H"*"removed $S"* ]]'
+check "hook and script are gone" eval '[ ! -e "$H" ] && [ ! -e "$S" ]'
+check "file stays patched and backups stay" eval 'flags_are -RpvUL && [ "$(backups)" -eq "$nb" ]'
+check "--uninstall prints the reinstall command and the backup dir" eval 'has "apt-get install --reinstall" && has "$B"'
 run apt_q install --reinstall "libpve-storage-perl=$(dpkg-query -W -f='${Version}' libpve-storage-perl)"
-check "pinned reinstall stays on 9.1.3 and leaves upstream flags" eval 'has "1 reinstalled" && flags_are -RpvU'
-run poke
-check "with the hook gone, apt runs leave the file alone" eval 'lacks "pve-zfs-L-patch" && flags_are -RpvU'
+check "pinned reinstall stays on 9.1.3 and restores upstream" eval 'has "1 reinstalled" && lacks "pve-zfs-L-patch" && flags_are -RpvU'
 run dpkg --verify libpve-storage-perl
 check "dpkg --verify is clean" eval 'rc_is 0 && [ -z "$out" ]'
-hook_verbatim; poke >/dev/null 2>&1; rm "$H"
-run dpkg --verify libpve-storage-perl
-check "while patched, dpkg --verify flags the checksum" has "??5??????"
+run one_liner --uninstall
+check "--uninstall again: nothing to remove, exits 0" eval 'rc_is 0 && has "nothing to remove"'
+
+one_liner "" >/dev/null 2>&1
+check "reinstalled with the one-liner and patched" flags_are -RpvUL
+rm /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch
 match=""
 for b in "$B"/ZFSPoolPlugin.pm.prepatch.*; do
     [ "$(md5sum < "$b" | cut -d' ' -f1)" = "$(installed_md5)" ] && match="$b"
 done
-check "a backup matches the installed version by md5sums" test -n "$match"
 cp "$match" /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm
+run poke
+check "restored backup with the hook removed stays upstream" eval 'lacks "pve-zfs-L-patch" && flags_are -RpvU'
 run dpkg --verify libpve-storage-perl
 check "restored backup: dpkg --verify is clean" eval 'rc_is 0 && [ -z "$out" ]'
-hook_verbatim
-sed -i 's/^/# /' "$H"
-run poke
-check "commenting out the hook with # disables it" eval 'lacks "pve-zfs-L-patch" && flags_are -RpvU'
-
-section "Uninstall per README"
-rm "$H" "$S"
-run poke
-check "after uninstall apt prints nothing from the hook" lacks "pve-zfs-L-patch"
-check "backups are still there until removed by hand" eval '[ "$(backups)" -gt 0 ]'
 
 printf '\n%s failed\n' "$fails"
 [ "$fails" -eq 0 ]
