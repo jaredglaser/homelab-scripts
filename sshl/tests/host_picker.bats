@@ -20,12 +20,12 @@ teardown() {
 }
 
 @test "host-picker: jumps to the picked host's window on the sshl socket" {
-    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
+    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     build_session
     stub_cmd fzf 'grep 192.0.2.2'
     tmux -L "$SOCKET" select-window -t "=$session_name:^"
 
-    TMUX_HOMELAB_CACHE="$SSHL_DIR_OVERRIDE/ips.cache" "$SSHL_SRC/host-picker.sh"
+    TMUX_HOMELAB_CACHE="$SSHL_DATA_DIR_OVERRIDE/ips.cache" "$SSHL_SRC/host-picker.sh"
     [ "$(tmux -L "$SOCKET" display -p -t "=$session_name:" '#{@host_ip}')" = "192.0.2.2" ]
 }

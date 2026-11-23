@@ -5,10 +5,10 @@ load test_helper
 # Write N fake hosts to ips.cache and call read_cache.
 seed_hosts() {
     local n="${1:-2}"
-    : > "$SSHL_DIR_OVERRIDE/ips.cache"
+    : > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     local i
     for i in $(seq 1 "$n"); do
-        printf '192.0.2.%d\tfake-host-%02d\n' "$i" "$i" >> "$SSHL_DIR_OVERRIDE/ips.cache"
+        printf '192.0.2.%d\tfake-host-%02d\n' "$i" "$i" >> "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     done
     read_cache
 }
@@ -99,8 +99,8 @@ seed_hosts() {
 @test "build_session: skips a host whose window fails and builds the rest" {
     seed_hosts 3
     fail_split_for_host 192.0.2.2
-    build_session 2> "$SSHL_DIR_OVERRIDE/err.log"
-    [[ "$(cat "$SSHL_DIR_OVERRIDE/err.log")" == *"Skipped 1 host(s): 192.0.2.2 (fake-host-02)"* ]]
+    build_session 2> "$SSHL_DATA_DIR_OVERRIDE/err.log"
+    [[ "$(cat "$SSHL_DATA_DIR_OVERRIDE/err.log")" == *"Skipped 1 host(s): 192.0.2.2 (fake-host-02)"* ]]
     [ "$(live_order)" = "192.0.2.1 192.0.2.3 " ]
     [ "$(tmux -L "$SOCKET" show-option -gv @build_complete)" = "1" ]
 }
@@ -108,8 +108,8 @@ seed_hosts() {
 @test "build_session: opens the session with the next host when the first fails" {
     seed_hosts 3
     fail_split_for_host 192.0.2.1
-    build_session 2> "$SSHL_DIR_OVERRIDE/err.log"
-    [[ "$(cat "$SSHL_DIR_OVERRIDE/err.log")" == *"Skipped 1 host(s): 192.0.2.1 (fake-host-01)"* ]]
+    build_session 2> "$SSHL_DATA_DIR_OVERRIDE/err.log"
+    [[ "$(cat "$SSHL_DATA_DIR_OVERRIDE/err.log")" == *"Skipped 1 host(s): 192.0.2.1 (fake-host-01)"* ]]
     [ "$(live_order)" = "192.0.2.2 192.0.2.3 " ]
     session_is_healthy
 }
@@ -124,19 +124,17 @@ seed_hosts() {
 }
 
 @test "build_session: builds every window when a host is named like the session" {
-    printf '192.0.2.1\ta\n192.0.2.2\t%s\n192.0.2.3\tc\n' "$session_name" > "$SSHL_DIR_OVERRIDE/ips.cache"
+    printf '192.0.2.1\ta\n192.0.2.2\t%s\n192.0.2.3\tc\n' "$session_name" > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     build_session
     [ "$(live_order)" = "192.0.2.1 192.0.2.2 192.0.2.3 " ]
 }
 
 @test "sshl: first run from an empty cache builds the session and exits 0" {
-    ln -s "$SSHL_SRC/popup-scan.sh" "$SSHL_DIR_OVERRIDE/popup-scan.sh"
-    ln -s "$SSHL_SRC/sshl-lib.sh" "$SSHL_DIR_OVERRIDE/sshl-lib.sh"
-    stub_cmd fzf 'grep "^NEW"'
+    stub_fzf 'grep "^NEW"'
     run env -u TMUX "$SSHL_SRC/sshl"
     [ "$status" -eq 0 ]
-    [ "$(cut -f1 "$SSHL_DIR_OVERRIDE/ips.cache" | tr '\n' ' ')" = "192.0.2.1 192.0.2.2 " ]
+    [ "$(cut -f1 "$SSHL_DATA_DIR_OVERRIDE/ips.cache" | tr '\n' ' ')" = "192.0.2.1 192.0.2.2 " ]
     [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
     session_is_healthy
 }

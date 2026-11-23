@@ -9,11 +9,9 @@ setup() {
     sshl_setup
     unset TMUX
     HI="$SSHL_SRC/host-info.sh"
-    export XDG_RUNTIME_DIR="$SSHL_DIR_OVERRIDE/run" HOME="$SSHL_DIR_OVERRIDE/home"
-    mkdir -m 700 "$XDG_RUNTIME_DIR" "$HOME"
     CACHE_DIR="$XDG_RUNTIME_DIR/sshl-host-info"
-    export SSH_LOG="$SSHL_DIR_OVERRIDE/ssh.log" SSH_OUT="$SSHL_DIR_OVERRIDE/ssh.out" \
-        SSH_GATE="$SSHL_DIR_OVERRIDE/ssh.gate"
+    export SSH_LOG="$SSHL_DATA_DIR_OVERRIDE/ssh.log" SSH_OUT="$SSHL_DATA_DIR_OVERRIDE/ssh.out" \
+        SSH_GATE="$SSHL_DATA_DIR_OVERRIDE/ssh.gate"
     : > "$SSH_LOG"
     touch "$SSH_GATE"
     printf 'SSHL\t90000\t3\n' > "$SSH_OUT"
@@ -35,6 +33,8 @@ cat "$f"'
 teardown() {
     local refused=""
     [[ -s "${TMUX_GUARD_LOG:-}" ]] && refused="$(cat "$TMUX_GUARD_LOG")"
+    # Release any fetch still held by the ssh stub, so teardown need not wait.
+    touch "$SSH_GATE"
     sshl_teardown
     if [[ -n "$refused" ]]; then
         echo "$refused" >&2
@@ -88,12 +88,12 @@ status_interval_is() {
     rm -f "$SSH_GATE"
     local i
     for i in $(seq 1 20); do
-        "$HI" testuser "$IP" > "$SSHL_DIR_OVERRIDE/out.$i" 2>&1 &
+        "$HI" testuser "$IP" > "$SSHL_DATA_DIR_OVERRIDE/out.$i" 2>&1 &
     done
     wait
     for i in $(seq 1 20); do
-        [[ "$(cat "$SSHL_DIR_OVERRIDE/out.$i")" == *"loading…"* ]] || {
-            echo "caller $i printed: $(cat "$SSHL_DIR_OVERRIDE/out.$i")" >&2
+        [[ "$(cat "$SSHL_DATA_DIR_OVERRIDE/out.$i")" == *"loading…"* ]] || {
+            echo "caller $i printed: $(cat "$SSHL_DATA_DIR_OVERRIDE/out.$i")" >&2
             return 1
         }
     done
@@ -156,7 +156,7 @@ status_interval_is() {
 }
 
 @test "host-info: the remote script prints one tagged line" {
-    local sandbox="$SSHL_DIR_OVERRIDE/sandbox" tool
+    local sandbox="$SSHL_DATA_DIR_OVERRIDE/sandbox" tool
     mkdir "$sandbox"
     for tool in awk tail wc cat; do ln -s "$(command -v "$tool")" "$sandbox/$tool"; done
     printf '#!/bin/sh\necho 1000\n' > "$sandbox/id"
@@ -269,15 +269,15 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
 }
 
 @test "host-info: ssh errors are not written through a planted symlink" {
-    export TMPDIR="$SSHL_DIR_OVERRIDE/tmp"
+    export TMPDIR="$SSHL_DATA_DIR_OVERRIDE/tmp"
     mkdir -p "$TMPDIR/tmux-homelab-info" "$CACHE_DIR"
     chmod 700 "$CACHE_DIR"
-    echo keep > "$SSHL_DIR_OVERRIDE/victim"
-    ln -s "$SSHL_DIR_OVERRIDE/victim" "$TMPDIR/tmux-homelab-info/$IP.err"
-    ln -s "$SSHL_DIR_OVERRIDE/victim" "$CACHE_DIR/testuser@$IP.err"
+    echo keep > "$SSHL_DATA_DIR_OVERRIDE/victim"
+    ln -s "$SSHL_DATA_DIR_OVERRIDE/victim" "$TMPDIR/tmux-homelab-info/$IP.err"
+    ln -s "$SSHL_DATA_DIR_OVERRIDE/victim" "$CACHE_DIR/testuser@$IP.err"
     "$HI" testuser "$IP" > /dev/null
     wait_until 10 fetch_done "testuser@$IP"
-    [ "$(cat "$SSHL_DIR_OVERRIDE/victim")" = "keep" ]
+    [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/victim")" = "keep" ]
 }
 
 @test "host-info: a user or host that is not a plain name is refused" {
@@ -291,7 +291,7 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
 # The status line is drawn from the real homelab.tmux.conf. The info
 # script path contains a space to cover the quoting in status-format[1].
 @test "host-info: in a real status line the spinner advances while one fetch runs" {
-    local wrapdir="$SSHL_DIR_OVERRIDE/dir with space" inv="$SSHL_DIR_OVERRIDE/invocations"
+    local wrapdir="$SSHL_DATA_DIR_OVERRIDE/dir with space" inv="$SSHL_DATA_DIR_OVERRIDE/invocations"
     mkdir "$wrapdir"
     : > "$inv"
     cat > "$wrapdir/info wrapper.sh" << EOF
@@ -311,9 +311,9 @@ EOF
     tmux -L "$SOCKET" set-environment -g -u SSHL_SOCKET_OVERRIDE
 
     rm -f "$SSH_GATE"
-    attach_grouped_client "$SSHL_DIR_OVERRIDE/typescript"
-    wait_until 10 grep -q 'clients 1' "$SSHL_DIR_OVERRIDE/typescript"
-    grep -q 'dead 0' "$SSHL_DIR_OVERRIDE/typescript"
+    attach_grouped_client "$SSHL_DATA_DIR_OVERRIDE/typescript"
+    wait_until 10 grep -q 'clients 1' "$SSHL_DATA_DIR_OVERRIDE/typescript"
+    grep -q 'dead 0' "$SSHL_DATA_DIR_OVERRIDE/typescript"
 
     inv_count_ge() { [ "$(wc -l < "$inv")" -ge "$1" ]; }
     wait_until 10 inv_count_ge 4
