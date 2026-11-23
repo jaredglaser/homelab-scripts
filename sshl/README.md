@@ -16,7 +16,7 @@ Runs on your workstation, not on the homelab nodes themselves.
 | getent | | reverse DNS names when ssh cannot name a host |
 | flock | | (util-linux) one host-info fetch at a time per host |
 | GNU coreutils, awk, tput | | `sort -V`, `readlink -f`, `stat -c`, `mktemp`, `seq` and terminal control in the reorder popup |
-| a terminal emulator | | `konsole` by default. It must accept `-e command args...`, as konsole and xterm do |
+| a terminal emulator | | `konsole` by default. See [Terminals](#terminals) |
 
 The tmux and bash minimums come from the features the scripts and `homelab.tmux.conf` use, checked against the tmux and bash change logs. Only tmux 3.4, bash 5.2 and fzf 0.44.1 and 0.54.3 were run. The fzf minimum is the release whose change log adds `FZF_SELECT_COUNT`.
 
@@ -74,6 +74,23 @@ The second status row shows uptime and pending package updates for the host in t
 Configuration lives in `sshl/config` (created from `config.example` on first run). Per-host overrides for username, tab name, and pane commands are supported. See the comments in `config.example`.
 
 A `#` starts a comment at the start of a line or after whitespace, so a `#` inside a value is kept. A line that is not `key=value` is reported with its line number and skipped. The config is rejected at load time, with a message naming the key, when `layout` is not one of `even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`, or when `session_name` is empty or contains `.` or `:`. `terminal` may carry arguments (`terminal=konsole --profile homelab`), split on whitespace.
+
+## Terminals
+
+sshl opens the session in a new window of the terminal named by `terminal=`, running `<terminal> -e tmux ...`. These were run with sshl:
+
+| Terminal | `terminal=` | Notes |
+|----------|-------------|-------|
+| konsole | `konsole` | |
+| xterm | `xterm` | Its default bitmap font has no glyph for the pane borders, `●` or `↻`. Use a TrueType font, e.g. `terminal=xterm -fa Monospace -fs 11` |
+| alacritty, kitty, tilix | the name | |
+| foot | `foot` | Wayland only |
+| gnome-terminal | `gnome-terminal` | sshl passes `--` in place of `-e` |
+| xfce4-terminal | `xfce4-terminal` | sshl passes `-x` in place of `-e` |
+
+For a terminal that takes the command after some other option, end the value with that option (`-e`, `-x` or `--`) and sshl adds nothing, for example `terminal=gnome-terminal --`. On Debian and Ubuntu, `terminal=x-terminal-emulator` opens the system's default terminal, which accepts `-e`.
+
+gnome-terminal, xfce4-terminal and tilix hand the window to an instance that is already running and return at once. sshl then cannot see a failure inside the window: if the window closes as soon as it opens, run the attach command `tmux -L homelab new-session -t '=homelab'` in a terminal of your own to read the error.
 
 ## Tests
 

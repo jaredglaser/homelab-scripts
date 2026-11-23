@@ -10,7 +10,10 @@ subnet=10.1.0.0/16
 session_name=homelab
 
 # Terminal emulator to launch (KDE default). It is run as
-# `<terminal> -e tmux ...`, so it must accept -e command args.
+# `<terminal> -e tmux ...`, the form konsole, xterm, alacritty, kitty, tilix
+# and foot accept. gnome-terminal gets `--` and xfce4-terminal gets `-x`
+# in place of -e. For a terminal that needs another option, end the value
+# with it (-e, -x or --) and sshl adds nothing.
 # Arguments are allowed, e.g. terminal=konsole --profile homelab
 terminal=konsole
 
