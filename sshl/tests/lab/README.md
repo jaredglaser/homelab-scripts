@@ -35,4 +35,6 @@ $L rekey web01            # give a host new SSH host keys
 
 Look at every screenshot. A wrong message or a cut-off status line only shows on screen.
 
+`shot`, `keys` and `type` find konsole windows only. To check another terminal, start it as `sshlab` on `DISPLAY=:99` and take the screenshot with `xwd -root -display :99`.
+
 The lab's desktop uses a UTF-8 locale, so tmux draws `●` and `↻`. Behind a loopback HTTPS proxy, as in a Claude Code cloud session, `up` builds through the proxy and forwards it to the hosts so `apt-get update` works there.
