@@ -152,8 +152,8 @@ fi
 subnet=""
 session_name="homelab"
 default_user="root"
-left_cmd='ssh {user}@{ip}'
-right_cmd='ssh -t {user}@{ip} htop'
+left_cmd='ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 {user}@{ip}'
+right_cmd='ssh -t -o ConnectTimeout=10 -o ServerAliveInterval=15 {user}@{ip} htop'
 terminal="konsole"
 layout="even-horizontal"
 
@@ -355,12 +355,14 @@ scan_subnet() {
 
     echo "Scanning $subnet for live hosts..." >&2
     local nmap_tmp nmap_err
+    local -a subnets
+    read -ra subnets <<<"${subnet//,/ }"
     nmap_tmp="$(mktemp)"
     nmap_err="$(mktemp)"
 
     # -oG to a file keeps the grepable records off stdout. The loop prints
     # the "Nmap scan report for" lines of the normal output as progress.
-    if ! nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "$subnet" -oG "$nmap_tmp" 2>"$nmap_err" \
+    if ! nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "${subnets[@]}" -oG "$nmap_tmp" 2>"$nmap_err" \
         | {
             local current_prefix="" line ip prefix
             while IFS= read -r line; do
@@ -384,7 +386,7 @@ scan_subnet() {
     # one host for a bad netmask, so the scan would report no hosts.
     if grep -q -e 'No targets were specified' -e 'Illegal netmask' "$nmap_err"; then
         rm -f "$nmap_tmp" "$nmap_err"
-        echo "Error: nmap could not read the subnet '$subnet'. Set subnet= in $CONFIG_FILE to a range in CIDR notation, such as 192.168.1.0/24." >&2
+        echo "Error: nmap could not read the subnet '$subnet'. Set subnet= in $CONFIG_FILE to one or more ranges in CIDR notation, such as 192.168.1.0/24 10.0.20.0/24." >&2
         return 1
     fi
     rm -f "$nmap_err"

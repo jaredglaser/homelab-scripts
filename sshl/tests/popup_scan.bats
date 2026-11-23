@@ -131,8 +131,7 @@ row_of() {
     # The refusal exits non-zero, and its message stays in the pane.
     wait_for_popup_exit "$pane" 1
     wait_for_pane_content "$pane" "Refusing: that would remove every host"
-    # The advice must not be --rebuild, which only rebuilds from the cache.
-    tmux -L "$SOCKET" capture-pane -t "$pane" -p -J | grep -q "To start over with a scan, run 'tmux -L $SOCKET kill-server', delete $SSHL_DATA_DIR_OVERRIDE/ips.cache, and run sshl again."
+    tmux -L "$SOCKET" capture-pane -t "$pane" -p -J | grep -q "To start over with a scan, delete $SSHL_DATA_DIR_OVERRIDE/ips.cache and run 'sshl --rebuild'."
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = "$before" ]
     [ "$(live_order)" = "192.0.2.1 " ]
 }
@@ -320,7 +319,7 @@ row_of() {
     grep -q '^CURRENT  192.0.2.1 .* fake-host-01$' "$SSHL_DATA_DIR_OVERRIDE/fzf.in"
 }
 
-@test "popup_scan: ticking a CURRENT host the scan did not find removes it" {
+@test "popup_scan: ticking a CURRENT host the scan did not find removes it without ignoring it" {
     printf '192.0.2.1\tfake-host-01\n192.0.2.9\tmoved-away\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     build_session
@@ -328,7 +327,7 @@ row_of() {
     source "$SSHL_SRC/popup-scan.sh"
     popup_scan 2>/dev/null
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tfake-host-01' ]
-    [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ignored.cache")" = $'192.0.2.9\tmoved-away' ]
+    [ ! -s "$SSHL_DATA_DIR_OVERRIDE/ignored.cache" ]
     [ "$(live_order)" = "192.0.2.1 " ]
 }
 
