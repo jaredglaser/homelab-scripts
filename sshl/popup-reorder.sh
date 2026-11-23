@@ -143,9 +143,15 @@ apply_reorder() {
             target_slot=$((base_idx + i))
             current_idx="$("${TMUX_CMD[@]}" display-message -p -t "$target_wid" '#{window_index}' 2>/dev/null || echo "")"
             [[ "$current_idx" == "$target_slot" ]] && continue
-            err="$("${TMUX_CMD[@]}" swap-window -s "$target_wid" -t "${session_name}:$target_slot" 2>&1)" \
-                && moved=$((moved + 1)) \
-                || { failed=$((failed + 1)); echo "  warn: swap $ip -> slot $target_slot failed: $err" >&2; }
+            # A bare window id resolves through the grouped session a client
+            # attaches with, and tmux refuses to swap between grouped sessions.
+            if err="$("${TMUX_CMD[@]}" swap-window -d -s "=$session_name:$target_wid" \
+                      -t "=$session_name:$target_slot" 2>&1)"; then
+                moved=$((moved + 1))
+            else
+                failed=$((failed + 1))
+                echo "  warn: swap $ip -> slot $target_slot failed: $err" >&2
+            fi
         done
 
         "${TMUX_CMD[@]}" move-window -r -t "=$session_name" 2>/dev/null || true
