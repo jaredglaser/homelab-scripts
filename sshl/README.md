@@ -18,7 +18,7 @@ Runs on your workstation, not on the homelab nodes themselves.
 | GNU coreutils, awk, tput | | `sort -V`, `readlink -f`, `stat -c`, `mktemp`, `seq` and terminal control in the reorder popup |
 | a terminal emulator | | `konsole` by default. See [Terminals](#terminals) |
 
-The tmux and bash minimums come from the features the scripts and `homelab.tmux.conf` use, checked against the tmux and bash change logs. Only tmux 3.4, bash 5.2 and fzf 0.44.1 and 0.54.3 were run. The fzf minimum is the release whose change log adds `FZF_SELECT_COUNT`.
+The minimums were checked by running the bats suite and the end-to-end lab with tmux 3.0a, 3.2a, 3.3a and 3.4, bash 4.3, 4.4, 5.0 and 5.2, and fzf 0.45.0, 0.46.0 and 0.54.3. Each minimum passes. Below it, tmux 3.0a cannot load `homelab.tmux.conf`, bash 4.3 fails on an empty host list, and fzf 0.45.0 lacks `FZF_SELECT_COUNT`, and sshl stops with a message naming the version.
 
 > [!NOTE]
 > Key-based SSH auth is strongly recommended. The script opens a session per host automatically, so if you rely on password auth you will need to sign in manually in every window, which defeats the purpose. If you haven't set up SSH keys yet, `ssh-copy-id user@host` is the quickest way to get there.
@@ -75,6 +75,15 @@ Configuration lives in `sshl/config` (created from `config.example` on first run
 
 A `#` starts a comment at the start of a line or after whitespace, so a `#` inside a value is kept. A line that is not `key=value`, an unknown key, and a per-host key that names a host rather than its IP (`host.web01.user`) are each reported with their line number and skipped. Per-host keys take the IP as the scan lists it, because windows are matched to them by IP. The config is rejected at load time, with a message naming the key, when `layout` is not one of `even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`, when `session_name` is empty or contains `.` or `:`, or when `default_user`, `left_cmd` or `right_cmd` is set to nothing. `terminal` may carry arguments (`terminal=konsole --profile homelab`), split on whitespace. Quotes around a whole value are dropped, so `terminal="konsole"` is the same as `terminal=konsole`.
 
+### SSH config
+
+Every pane, the scan's name lookup and the status-bar host info run `ssh <user>@<ip>`, so a `~/.ssh/config` entry applies when its `Host` pattern matches the IP, for example `Host 192.168.1.*` with `Port`, `ProxyJump` or `IdentityFile`. Two things do not carry over:
+
+- A `User` line is overridden, because the user always comes from `default_user` or `host.<ip>.user`. Set the user there.
+- The scan checks port 22 only, so a host whose sshd listens on another port is not found, even when `~/.ssh/config` gives its port.
+
+To log in through a `Host` alias, name the host after it with `host.<ip>.name=<alias>` and put `{hostname}` in the pane command, as in `host.<ip>.left_cmd=ssh {hostname}`. `{hostname}` is the window's name, which is the IP for a host that has none.
+
 ## Terminals
 
 sshl opens the session in a new window of the terminal named by `terminal=`, running `<terminal> -e tmux ...`. These were run with sshl:
@@ -87,6 +96,8 @@ sshl opens the session in a new window of the terminal named by `terminal=`, run
 | foot | `foot` | Wayland only |
 | gnome-terminal | `gnome-terminal` | sshl passes `--` in place of `-e` |
 | xfce4-terminal | `xfce4-terminal` | sshl passes `-x` in place of `-e` |
+
+If the status bar shows `_` in place of `●` and `↻`, tmux found no UTF-8 locale in the environment sshl started from: set `LANG` to a UTF-8 locale such as `en_US.UTF-8` (check with `locale`).
 
 For a terminal that takes the command after some other option, end the value with that option (`-e`, `-x` or `--`) and sshl adds nothing, for example `terminal=gnome-terminal --`. On Debian and Ubuntu, `terminal=x-terminal-emulator` opens the system's default terminal, which accepts `-e`.
 
