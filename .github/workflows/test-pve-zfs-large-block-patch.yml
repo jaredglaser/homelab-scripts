@@ -19,12 +19,13 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bats shellcheck
-      - name: Shellcheck the script and test stubs
+      - name: Shellcheck the script, test stubs and e2e harness
         run: |
           shellcheck pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh \
             pve-zfs-large-block-patch/tests/bin/* \
             pve-zfs-large-block-patch/tests/stubs/* \
-            pve-zfs-large-block-patch/tests/test_helper.bash
+            pve-zfs-large-block-patch/tests/test_helper.bash \
+            pve-zfs-large-block-patch/tests/e2e/*.sh
           shellcheck -S warning pve-zfs-large-block-patch/tests/patch.bats
       - name: Run pve-zfs-large-block-patch tests
         run: bats pve-zfs-large-block-patch/tests/
