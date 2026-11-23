@@ -1,36 +1,47 @@
+# shellcheck shell=bash
+
 setup() {
-    PATCH_SRC="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
-    SCRIPT="$PATCH_SRC/pve-zfs-large-block-patch.sh"
-    FIXTURES="$(cd "$(dirname "${BATS_TEST_FILENAME}")" && pwd)/fixtures"
-    TEST_BIN="$(cd "$(dirname "${BATS_TEST_FILENAME}")" && pwd)/bin"
+    TESTS_DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")" && pwd)"
+    # shellcheck disable=SC2034 # read by patch.bats
+    SCRIPT="$(cd "$TESTS_DIR/.." && pwd)/pve-zfs-large-block-patch.sh"
+    FIXTURES="$TESTS_DIR/fixtures"
+    STUBS="$TESTS_DIR/stubs"
 
     PATCH_TMP="$(mktemp -d)"
     # The script falls back to the real /usr/share/perl5 path when the overrides
     # are empty, which is what an empty PATCH_TMP produces.
     [ -d "$PATCH_TMP" ] || { echo "mktemp -d failed" >&2; return 1; }
-    mkdir -p "$PATCH_TMP/root"
+    mkdir -p "$PATCH_TMP/root" "$PATCH_TMP/bin"
 
+    export PVE_ZFS_PATCH_TESTING=1
     export PVE_ZFS_PATCH_FILE_OVERRIDE="$PATCH_TMP/root/ZFSPoolPlugin.pm"
     export PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE="$PATCH_TMP/backups"
 
-    export PATH="$TEST_BIN:$PATH"
+    # Stubs that fail on purpose live in $PATCH_TMP/bin, linked in per test by
+    # with_stub, so they shadow the real tools for that test only.
+    REAL_GREP="$(command -v grep)"
+    export REAL_GREP
+    export PATH="$PATCH_TMP/bin:$TESTS_DIR/bin:$PATH"
     export FAKE_PKG_STATE=installed
-    export FAKE_PKG_VER=9.1.5
     export FAKE_SYSLOG="$PATCH_TMP/syslog"
+    export FAKE_DPKG_QUERY_ARGS="$PATCH_TMP/dpkg-query.args"
     FILE="$PVE_ZFS_PATCH_FILE_OVERRIDE"
     BACKUPS="$PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE"
 }
 
 teardown() {
-    # Several tests chmod 000 or 500 to force failure paths, so rm -rf needs help.
-    chmod -R u+rwX "$PATCH_TMP" 2>/dev/null || true
     rm -rf "$PATCH_TMP"
-    unset PVE_ZFS_PATCH_FILE_OVERRIDE PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE FAKE_SYSLOG \
-          FAKE_PKG_STATE FAKE_PKG_VER FAKE_PKG_RC FAKE_PKG_RAW
+    unset PVE_ZFS_PATCH_TESTING PVE_ZFS_PATCH_FILE_OVERRIDE PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE \
+          FAKE_SYSLOG FAKE_DPKG_QUERY_ARGS FAKE_PKG_STATE FAKE_PKG_RC FAKE_PKG_RAW FAKE_PKG_STDERR \
+          FAKE_CP_MODE FAKE_SED_MODE FAKE_GREP_FAIL_MATCH REAL_GREP
 }
 
 seed() {
     cp "$FIXTURES/$1" "$FILE"
+}
+
+with_stub() {
+    ln -s "$STUBS/$1" "$PATCH_TMP/bin/$1"
 }
 
 backup_count() {

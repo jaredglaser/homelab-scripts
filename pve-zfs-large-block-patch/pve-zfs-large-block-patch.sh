@@ -8,18 +8,21 @@
 #   - Hard failures with "incremental send stream requires -L (--large-block),
 #     to match previous receive" when migrating back to the source
 #
-# Runs after every dpkg invocation via the apt hook in
-# /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch
+# Runs after every apt-driven dpkg run via the apt hook in
+# /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch. A direct dpkg -i does not
+# run the hook.
 #
-# The hook discards the exit code, so failures also go to syslog under the tag
-# pve-zfs-L-patch. The _OVERRIDE variables exist for the test suite.
+# The hook discards the exit code, so failures go to syslog (daemon.err) under
+# the tag pve-zfs-L-patch, and each re-patch goes there at daemon.notice.
 
 set -u
+export LC_ALL=C
 
-FILE="${PVE_ZFS_PATCH_FILE_OVERRIDE:-/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm}"
-BACKUP_DIR="${PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE:-/var/backups/pve-zfs-L-patch}"
+DEFAULT_FILE="/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm"
+DEFAULT_BACKUP_DIR="/var/backups/pve-zfs-L-patch"
 HOOK_FILE="/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch"
 PKG="libpve-storage-perl"
+TAG="pve-zfs-L-patch"
 SELF="$0"
 
 if [ -t 2 ]; then
@@ -28,7 +31,21 @@ else
     RED=''; GREEN=''; YELLOW=''; BOLD=''; RESET=''
 fi
 
-prefix="${BOLD}[pve-zfs-L-patch]${RESET}"
+prefix="${BOLD}[${TAG}]${RESET}"
+
+# A root shell left with an override exported from a manual test would
+# otherwise patch the temp copy during apt upgrade and leave the real file alone.
+if [ "${PVE_ZFS_PATCH_TESTING:-}" = 1 ]; then
+    FILE="${PVE_ZFS_PATCH_FILE_OVERRIDE:-$DEFAULT_FILE}"
+    BACKUP_DIR="${PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE:-$DEFAULT_BACKUP_DIR}"
+    echo "${prefix} ${YELLOW}TEST MODE${RESET} - PVE_ZFS_PATCH_TESTING=1, using $FILE and $BACKUP_DIR" >&2
+else
+    FILE="$DEFAULT_FILE"
+    BACKUP_DIR="$DEFAULT_BACKUP_DIR"
+    if [ -n "${PVE_ZFS_PATCH_FILE_OVERRIDE:-}${PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE:-}" ]; then
+        echo "${prefix} ${YELLOW}NOTE${RESET} - ignoring PVE_ZFS_PATCH_FILE_OVERRIDE and PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE because PVE_ZFS_PATCH_TESTING is not 1, using $FILE and $BACKUP_DIR" >&2
+    fi
+fi
 
 # Only the first message line reaches syslog.
 report_and_exit() {
@@ -37,7 +54,7 @@ report_and_exit() {
     for line in "$@"; do
         echo "${prefix} ${RED}${label}${RESET} - $line" >&2
     done
-    logger -p daemon.err -t pve-zfs-L-patch -- "$1" 2>/dev/null || true
+    logger -p daemon.err -t "$TAG" -- "$1" 2>/dev/null || true
     exit 1
 }
 
@@ -51,38 +68,96 @@ require() {
     done
 }
 
+# Filled in once sed has rewritten the file, so a later read error names the
+# backup to restore.
+restore_hint=()
+
+read_fail() {
+    fail "cannot read $FILE (grep exit $1). Check permissions and disk health." "${restore_hint[@]}"
+}
+
 # grep exits 2 on a read error, 1 on no match.
 has_pattern() {
     local rc
     grep -F -- "$1" "$FILE" >/dev/null; rc=$?
     [ "$rc" -le 1 ] && return "$rc"
-    fail "cannot read $FILE (grep exit $rc). Check permissions and disk health."
+    read_fail "$rc"
 }
 
-require grep sed cp mkdir date dpkg-query dpkg
+# A call site is 'zfs', 'send' as a Perl list (either quote style, any spacing)
+# or a quoted string that starts with zfs send. Its flag words are the -xyz
+# words after it on the same line, up to the next call site. A site passes when
+# one of them contains L, or --large-block follows it. A site whose flags are
+# on a later line has none on its own line, so it fails rather than passes.
+SITE_RE="['\"]zfs(['\"][[:space:]]*,[[:space:]]*['\"]|[[:space:]]+)send([^A-Za-z0-9_-]|\$)"
+L_FLAG_RE='(^|[^A-Za-z0-9_-])-[A-Za-z]*L[A-Za-z]*([^A-Za-z0-9_-]|$)'
 
-pkg_state=""
-pkg_ver=""
-pkg_info=$(dpkg-query -W -f='${db:Status-Status}|${Version}' "$PKG" 2>&1); pkg_rc=$?
+# Prints "line N: <code>" for each call site without -L. Exits via fail on a
+# read error.
+sites_without_l() {
+    local sites rc entry lineno rest seg
+    sites=$(grep -nE -- "$SITE_RE" "$FILE"); rc=$?
+    [ "$rc" -le 1 ] || read_fail "$rc"
+    [ "$rc" -eq 1 ] && return 0
+    while IFS= read -r entry; do
+        lineno="${entry%%:*}"
+        rest="${entry#*:}"
+        while [[ $rest =~ $SITE_RE ]]; do
+            rest="${rest#*"${BASH_REMATCH[0]}"}"
+            seg="$rest"
+            [[ $seg =~ $SITE_RE ]] && seg="${seg%%"${BASH_REMATCH[0]}"*}"
+            if ! [[ $seg =~ $L_FLAG_RE ]] && [[ $seg != *--large-block* ]]; then
+                entry="${entry#*:}"
+                echo "line $lineno: ${entry#"${entry%%[![:space:]]*}"}"
+                break
+            fi
+        done
+    done <<< "$sites"
+}
+
+# Runs on the already-patched path and after a rewrite, so an unreviewed send
+# call cannot hide behind a successful patch of the known one.
+check_all_sites() {
+    local bad first
+    bad=$(sites_without_l) || exit 1
+    [ -z "$bad" ] && return 0
+    first="${bad%%$'\n'*}"
+    local -a lines=()
+    mapfile -t lines <<< "$bad"
+    warn "$FILE still has a zfs send call without -L (${first%%:*})." \
+         "${lines[@]}" \
+         "$@" \
+         "Upstream code may have changed. Manual review required." \
+         "Replication for >128K recordsize datasets may be broken."
+}
+
+require grep sed cp cmp mkdir rm stat date mktemp dpkg-query
+
+# Capture stdout alone: dpkg prints warnings about unrelated packages on
+# stderr with exit 0, and those must not be read as this package's state.
+pkg_err_file=$(mktemp) || fail "cannot create a temporary file for dpkg-query errors."
+trap 'rm -f "$pkg_err_file"' EXIT
+pkg_state=$(dpkg-query -W -f='${db:Status-Status}\n' "$PKG" 2>"$pkg_err_file"); pkg_rc=$?
+pkg_err=$(<"$pkg_err_file")
+
 case "$pkg_rc" in
-    0)
-        case "$pkg_info" in
-            *"|"*) pkg_state="${pkg_info%%|*}"; pkg_ver="${pkg_info##*|}" ;;
-            # Debian versions never contain a pipe.
-            *) fail "dpkg-query returned unparsable output for $PKG: $pkg_info" ;;
-        esac
-        ;;
-    # dpkg-query exits 1 for a package it has no record of.
-    1) ;;
-    *) fail "cannot determine $PKG status: $pkg_info" \
+    0|1) ;;
+    *) fail "cannot determine $PKG status (dpkg-query exit $pkg_rc): ${pkg_err:-no error text}" \
             "Refusing to guess at an unknown package state." ;;
 esac
 
-# half-installed, unpacked and triggers-pending are present states too.
-case "$pkg_state" in
-    ""|not-installed|config-files) pkg_present=0 ;;
-    *)                             pkg_present=1 ;;
-esac
+# dpkg-query exits 1 with empty stdout for a package it has no record of.
+if [ "$pkg_rc" -eq 1 ] && [ -z "$pkg_state" ]; then
+    pkg_present=0
+else
+    case "$pkg_rc:$pkg_state" in
+        0:not-installed|0:config-files) pkg_present=0 ;;
+        0:installed|0:half-installed|0:unpacked|0:half-configured|0:triggers-awaited|0:triggers-pending)
+            pkg_present=1 ;;
+        *) fail "dpkg-query returned an unrecognised status for $PKG: '$pkg_state' (exit $pkg_rc)" \
+                "Refusing to guess at an unknown package state." ;;
+    esac
+fi
 
 if [ -L "$FILE" ] && [ ! -e "$FILE" ]; then
     fail "$FILE is a broken symlink." \
@@ -107,50 +182,90 @@ if [ ! -f "$FILE" ]; then
     fail "$FILE is a $(stat -Lc %F "$FILE"), not a regular file."
 fi
 
-# libpve-storage-perl 9.1.3 added -U (--no-preserve-encryption) to the send flags.
-if dpkg --compare-versions "$pkg_ver" ge "9.1.3"; then
-    ORIGINAL_PATTERN="my \$cmd = ['zfs', 'send', '-RpvU']"
-    TARGET_PATTERN="my \$cmd = ['zfs', 'send', '-RpvUL']"
-    SED_EXPR="s/my \$cmd = \['zfs', 'send', '-RpvU'\]/my \$cmd = ['zfs', 'send', '-RpvUL']/g"
-else
-    ORIGINAL_PATTERN="my \$cmd = ['zfs', 'send', '-Rpv']"
-    TARGET_PATTERN="my \$cmd = ['zfs', 'send', '-RpvL']"
-    SED_EXPR="s/my \$cmd = \['zfs', 'send', '-Rpv'\]/my \$cmd = ['zfs', 'send', '-RpvL']/g"
+# The two reviewed upstream shapes. '-Rpv'] never matches inside '-RpvU'], so
+# the file content alone says which is present. libpve-storage-perl 9.1.3
+# added -U (--no-preserve-encryption).
+U_ORIGINAL="my \$cmd = ['zfs', 'send', '-RpvU']"
+U_TARGET="my \$cmd = ['zfs', 'send', '-RpvUL']"
+U_SED="s/my \$cmd = \['zfs', 'send', '-RpvU'\]/my \$cmd = ['zfs', 'send', '-RpvUL']/g"
+PLAIN_ORIGINAL="my \$cmd = ['zfs', 'send', '-Rpv']"
+PLAIN_TARGET="my \$cmd = ['zfs', 'send', '-RpvL']"
+PLAIN_SED="s/my \$cmd = \['zfs', 'send', '-Rpv'\]/my \$cmd = ['zfs', 'send', '-RpvL']/g"
+
+sed_args=()
+targets=()
+originals=()
+if has_pattern "$U_ORIGINAL"; then
+    sed_args+=(-e "$U_SED"); originals+=("$U_ORIGINAL"); targets+=("$U_TARGET")
+fi
+if has_pattern "$PLAIN_ORIGINAL"; then
+    sed_args+=(-e "$PLAIN_SED"); originals+=("$PLAIN_ORIGINAL"); targets+=("$PLAIN_TARGET")
 fi
 
-if ! has_pattern "$ORIGINAL_PATTERN"; then
-    if has_pattern "$TARGET_PATTERN"; then
+if [ "${#sed_args[@]}" -eq 0 ]; then
+    if has_pattern "$U_TARGET" || has_pattern "$PLAIN_TARGET"; then
+        check_all_sites
         echo "${prefix} ${GREEN}OK${RESET} - patch already present in $FILE (no changes needed)" >&2
         exit 0
     fi
     warn "$FILE does not contain expected pattern." \
          "Upstream code may have changed. Manual review required." \
-         "Searched for: $ORIGINAL_PATTERN" \
+         "Searched for: $U_ORIGINAL" \
+         "Searched for: $PLAIN_ORIGINAL" \
          "Replication for >128K recordsize datasets may be broken."
 fi
 
 # Snapshot the file before touching it, because rollback depends on these backups.
-# cp needs -L: -a implies --no-dereference, and the target can be a symlink.
 mkdir -p "$BACKUP_DIR" || fail "cannot create $BACKUP_DIR." \
                                "Refusing to patch $FILE without a backup."
-backup="${BACKUP_DIR}/ZFSPoolPlugin.pm.prepatch.$(date +%Y%m%d-%H%M%S).$$"
-if ! cp -aL "$FILE" "$backup"; then
-    rm -f "$backup"
-    fail "backup to $backup failed (full or read-only /var?)." \
-         "Refusing to patch $FILE without a backup."
+
+# A write that keeps failing (immutable file, read-only /usr) would otherwise
+# add an identical copy on every apt run. Names sort by timestamp in C locale.
+newest=""
+for candidate in "$BACKUP_DIR"/ZFSPoolPlugin.pm.prepatch.*; do
+    [ -f "$candidate" ] && newest="$candidate"
+done
+
+if [ -n "$newest" ] && cmp -s "$FILE" "$newest"; then
+    backup="$newest"
+    echo "${prefix} reusing $backup, which already holds this exact content" >&2
+else
+    backup="${BACKUP_DIR}/ZFSPoolPlugin.pm.prepatch.$(date +%Y%m%d-%H%M%S).$$"
+    # cp needs -L: -a implies --no-dereference, and the target can be a symlink.
+    if ! cp -aL "$FILE" "$backup"; then
+        rm -f "$backup"
+        fail "backup to $backup failed (full or read-only /var?)." \
+             "Refusing to patch $FILE without a backup."
+    fi
+    if ! cmp -s "$FILE" "$backup"; then
+        rm -f "$backup"
+        fail "backup $backup does not match $FILE after copying." \
+             "Refusing to patch $FILE without a backup."
+    fi
 fi
 
-# Apply the patch. sed -i replaces the path it is given. --follow-symlinks
-# resolves the symlink first.
-if ! sed -i --follow-symlinks "$SED_EXPR" "$FILE"; then
+# sed -i writes a temp file and renames it over the path it is given, so a
+# failed run normally leaves the file as it was. --follow-symlinks resolves the
+# symlink first.
+if ! sed -i --follow-symlinks "${sed_args[@]}" "$FILE"; then
+    if cmp -s "$FILE" "$backup"; then
+        fail "sed returned an error while patching $FILE." \
+             "$FILE is unchanged, so there is nothing to restore. Review the sed error above."
+    fi
     fail "sed returned an error while patching $FILE." \
          "Restore $backup and review manually."
 fi
+restore_hint=("$FILE was already rewritten. Restore $backup if it is not correct.")
 
-if has_pattern "$ORIGINAL_PATTERN" || ! has_pattern "$TARGET_PATTERN"; then
-    fail "$FILE is not correctly patched after sed." \
-         "Restore $backup and review manually."
-fi
+for i in "${!originals[@]}"; do
+    if has_pattern "${originals[$i]}" || ! has_pattern "${targets[$i]}"; then
+        fail "$FILE is not correctly patched after sed." \
+             "Restore $backup and review manually."
+    fi
+done
+
+check_all_sites "The known send call was patched (backup: $backup)."
 
 echo "${prefix} ${YELLOW}APPLIED${RESET} - patched $FILE to add -L flag (backup: $backup)" >&2
+logger -p daemon.notice -t "$TAG" -- "patched $FILE to add -L flag (backup: $backup)" 2>/dev/null || true
 exit 0

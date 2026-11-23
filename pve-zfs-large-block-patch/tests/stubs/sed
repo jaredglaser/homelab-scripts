@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Misbehaving sed for tests, linked in by with_stub. The last argument is the file.
+#   FAKE_SED_MODE=fail-unchanged - exit 1 and leave the file alone, as sed -i does (the default)
+#   FAKE_SED_MODE=fail-changed   - truncate the file, then exit 1
+#   FAKE_SED_MODE=noop-ok        - leave the file alone and exit 0
+file="${*: -1}"
+case "${FAKE_SED_MODE:-fail-unchanged}" in
+    noop-ok) exit 0 ;;
+    fail-changed) : > "$file" ;;
+esac
+echo "sed: couldn't edit $file: I/O error" >&2
+exit 1

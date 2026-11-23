@@ -1,3 +1,4 @@
 #!/usr/bin/env bash
-# Fake logger for tests. Appends the message so the syslog path can be asserted.
-printf '%s\n' "${*: -1}" >> "${FAKE_SYSLOG:-/dev/null}"
+# Fake logger for tests. Appends the whole argument list as one line, so tests
+# can assert the priority and tag as well as the message.
+printf '%s\n' "$*" >> "${FAKE_SYSLOG:-/dev/null}"

@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Failing cp for tests, linked in by with_stub. Copies only the first 10 bytes
+# of the source, the way a full disk would leave it.
+#   FAKE_CP_MODE=partial-fail - then exit 1 (the default)
+#   FAKE_CP_MODE=partial-ok   - then exit 0, so only a content check catches it
+head -c 10 "${@: -2:1}" > "${@: -1}"
+case "${FAKE_CP_MODE:-partial-fail}" in
+    partial-ok) exit 0 ;;
+    *) echo "cp: error writing '${*: -1}': No space left on device" >&2; exit 1 ;;
+esac
