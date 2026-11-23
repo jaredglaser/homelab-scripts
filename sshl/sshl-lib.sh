@@ -176,6 +176,20 @@ if (( ${#terminal_cmd[@]} == 0 )); then
     exit 1
 fi
 
+# The option that comes before the attach command. gnome-terminal and
+# xfce4-terminal read -e as a single string, so `-e tmux -L ...` fails on
+# -L. A value that already ends in such an option is used as written.
+# shellcheck disable=SC2034  # the launcher reads terminal_exec
+case "${terminal_cmd[${#terminal_cmd[@]}-1]}" in
+    -e|-x|--) terminal_exec=() ;;
+    *)
+        case "${terminal_cmd[0]##*/}" in
+            gnome-terminal) terminal_exec=(--) ;;
+            xfce4-terminal) terminal_exec=(-x) ;;
+            *)              terminal_exec=(-e) ;;
+        esac ;;
+esac
+
 require tmux
 
 # ips.cache mirrors the live tmux session. Each line is `<ip>\t<name>`

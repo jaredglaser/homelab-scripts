@@ -113,7 +113,7 @@ if command -v "${terminal_cmd[0]}" &>/dev/null; then
     # the shell sshl was started from. A terminal that rejects its
     # arguments exits within moments, so wait briefly to report that.
     term_log="$(mktemp)"
-    env -u TMUX -u TMUX_PANE "${terminal_cmd[@]}" -e "${attach_cmd[@]}" \
+    env -u TMUX -u TMUX_PANE "${terminal_cmd[@]}" "${terminal_exec[@]}" "${attach_cmd[@]}" \
         </dev/null >"$term_log" 2>&1 &
     term_pid=$!
     for _ in 1 2 3 4 5; do
