@@ -147,3 +147,15 @@ seed_hosts() {
     count=$(tmux -L "$SOCKET" list-windows -t "=$session_name" | wc -l)
     [ "$count" -eq 1 ]
 }
+
+@test "build_session: a main-* layout leaves the second pane a usable size" {
+    seed_hosts 1
+    layout=main-vertical
+    build_session
+    local w
+    w=$(tmux -L "$SOCKET" display -p -t "=$session_name:0.1" '#{pane_width}')
+    (( w >= 20 )) || { echo "second pane is $w columns wide"; return 1; }
+    tmux -L "$SOCKET" select-layout -t "=$session_name:0" main-horizontal
+    w=$(tmux -L "$SOCKET" display -p -t "=$session_name:0.1" '#{pane_height}')
+    (( w >= 6 )) || { echo "second pane is $w rows high"; return 1; }
+}
