@@ -60,7 +60,7 @@ popup_scan() {
     fzf_input="${fzf_input%$'\n'}"
 
     local header
-    header=$'space toggle • tab toggle+down • enter apply • esc cancel\n'
+    header=$'space or tab tick and move down • enter apply • esc cancel\n'
     header+='tick CURRENT to remove (and ignore)  •  tick NEW to add  •  leave alone for no change'
 
     local result rc=0
