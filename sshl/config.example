@@ -1,12 +1,17 @@
 # sshl config
+#
+# One key=value per line. A # starts a comment at the start of a line or
+# after whitespace, so a # inside a value is kept.
 
 # Subnet to scan for live hosts (CIDR notation)
 subnet=10.1.0.0/16
 
-# Tmux session name
+# Tmux session name (no '.' or ':', which tmux reads as separators)
 session_name=homelab
 
-# Terminal emulator to launch (KDE default)
+# Terminal emulator to launch (KDE default). It is run as
+# `<terminal> -e tmux ...`, so it must accept -e command args.
+# Arguments are allowed, e.g. terminal=konsole --profile homelab
 terminal=konsole
 
 # Default SSH username (used when no per-host override)
@@ -25,11 +30,12 @@ layout=even-horizontal
 
 # Per-host overrides (optional). Keys:
 #   host.<ip>.user       override SSH username
-#   host.<ip>.name       override tab name (otherwise reverse DNS, then IP)
+#   host.<ip>.name       override tab name (otherwise the host's own
+#                        `hostname -s` over ssh, then reverse DNS, then the IP)
 #   host.<ip>.left_cmd   override left-pane command for this host
 #   host.<ip>.right_cmd  override right-pane command for this host
 #
 # Examples:
 # host.192.168.1.10.user=admin
 # host.192.168.1.10.name=webserver
-# host.192.168.1.20.right_cmd=btop
+# host.192.168.1.20.right_cmd=ssh -t {user}@{ip} btop
