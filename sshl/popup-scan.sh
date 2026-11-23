@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 # Run nmap, present a multi-select fzf where each row carries an
 # explicit action tag: CURRENT (already a window) or NEW (just found).
@@ -13,12 +14,16 @@ source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
 # This avoids relying on fzf's preselect (which is unreliable across
 # many entries and can silently leave the diff thinking "nothing was
 # kept", killing every window and destroying the session).
+#
+# Returns non-zero on every failure, so the popup (display-popup -EE)
+# stays open with the message until the user closes it.
 popup_scan() {
-    require fzf
+    require_fzf
     require nmap
     read_cache
     read_ignored
     scan_subnet
+    refresh_cached_names
 
     local -A in_cache=()
     local -A in_ignored=()
@@ -58,30 +63,13 @@ popup_scan() {
     header=$'space toggle • tab toggle+down • enter apply • esc cancel\n'
     header+='tick CURRENT to remove (and ignore)  •  tick NEW to add  •  leave alone for no change'
 
-    # fzf --multi falls back to the focused line when Enter is pressed
-    # with nothing marked, which silently ticks the first row. Every
-    # selection-changing keybind touches a flag file. Enter only accepts
-    # when the flag exists, otherwise it aborts to a no-op. (transform
-    # action requires fzf 0.45+.)
-    local flag
-    flag=$(mktemp)
-    rm -f "$flag"
-    trap 'rm -f "$flag"' RETURN
-
-    local result
-    result=$(printf '%s\n' "$fzf_input" \
-        | SSHL_FLAG="$flag" fzf --multi --reverse --no-sort --height=100% \
-              --header="$header" --header-first \
-              --bind='space:execute-silent(touch "$SSHL_FLAG")+toggle+down' \
-              --bind='tab:execute-silent(touch "$SSHL_FLAG")+toggle+down' \
-              --bind='btab:execute-silent(touch "$SSHL_FLAG")+toggle+up' \
-              --bind='enter:transform([ -e "$SSHL_FLAG" ] && echo accept || echo abort)' \
-              --prompt='hosts> ') || {
+    local result rc=0
+    result=$(printf '%s\n' "$fzf_input" | multi_select 'hosts> ' "$header") || rc=$?
+    if (( rc == 1 )); then
         echo "No changes." >&2
         return 0
-    }
-
-    [[ -z "$result" ]] && { echo "No changes." >&2; return 0; }
+    fi
+    (( rc == 0 )) || return 1
 
     local -a to_add=() to_remove=()
     local stag sip line
@@ -115,8 +103,7 @@ apply_scan_diff() {
     if (( final_count <= 0 )); then
         echo "Refusing: would leave zero hosts (session would self-destruct)." >&2
         echo "Use 'sshl --rebuild' if you really want to start over." >&2
-        sleep 2.5
-        return 0
+        return 1
     fi
 
     local ip c
@@ -128,6 +115,7 @@ apply_scan_diff() {
         for c in "${ips[@]}"; do [[ "$c" != "$ip" ]] && new_ips+=("$c"); done
         ips=("${new_ips[@]}")
         ignored_ips+=("$ip")
+        # shellcheck disable=SC2034  # write_ignored reads it through a nameref
         ignored_name["$ip"]="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
         unset 'cached_name[$ip]'
     done
@@ -167,16 +155,14 @@ apply_scan_diff() {
         done
     fi
 
-    refresh_session_options
     echo "Added ${#_to_add[@]}, removed ${#_to_remove[@]}." >&2
     if (( ${#no_window[@]} > 0 )); then
         echo "No window for ${#no_window[@]} host(s): $(format_host_list "${no_window[@]}")." >&2
         echo "They are saved in the cache. Fix the cause above and run 'sshl --rebuild' to retry." >&2
+        return 1
     fi
     # Brief pause so the message is visible before the popup closes.
-    if (( has_session )); then
-        if (( ${#no_window[@]} > 0 )); then sleep 2.5; else sleep 1.2; fi
-    fi
+    if (( has_session )); then sleep 1.2; fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then popup_scan; fi

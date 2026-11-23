@@ -20,11 +20,20 @@ if ! command -v fzf &>/dev/null; then
     exit 0
 fi
 
+rc=0
 pick=$(awk -F'\t' '
     NF && $1 !~ /^#/ {
         printf "%-18s %s\n", $1, ($2 == "" ? "-" : $2)
     }
-' "$cache" | fzf --prompt='host> ' --height=100% --reverse --no-sort)
+' "$cache" | fzf --prompt='host> ' --height=100% --reverse --no-sort) || rc=$?
+# 1 is no match and 130 is Esc. The popup (display-popup -EE) stays open
+# on any other status, so the message below stays readable.
+case "$rc" in
+    0) ;;
+    1|130) exit 0 ;;
+    *) echo "Error: the host picker failed (exit status $rc). Press Esc to close this popup." >&2
+       exit 1 ;;
+esac
 
 [[ -z "${pick:-}" ]] && exit 0
 

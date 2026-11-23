@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 # fzf multi-select over ignored.cache. Tick = un-ignore (returns the
 # IP to scan-candidate status). No window added immediately.
 popup_ignored() {
-    require fzf
+    require_fzf
     read_ignored
 
     if [[ ${#ignored_ips[@]} -eq 0 ]]; then
@@ -24,29 +25,13 @@ popup_ignored() {
 
     local header=$'space toggle • tab toggle+down • enter un-ignore • esc cancel\nticked entries return as scan candidates'
 
-    # See popup_scan for the rationale: fzf --multi falls back to the
-    # focused line on Enter when nothing is marked. The flag file is
-    # touched by every selection-changing keybind, and Enter aborts to a
-    # no-op when the flag is absent.
-    local flag
-    flag=$(mktemp)
-    rm -f "$flag"
-    trap 'rm -f "$flag"' RETURN
-
-    local result
-    result=$(printf '%s\n' "$fzf_input" \
-        | SSHL_FLAG="$flag" fzf --multi --reverse --no-sort --height=100% \
-              --header="$header" --header-first \
-              --bind='space:execute-silent(touch "$SSHL_FLAG")+toggle+down' \
-              --bind='tab:execute-silent(touch "$SSHL_FLAG")+toggle+down' \
-              --bind='btab:execute-silent(touch "$SSHL_FLAG")+toggle+up' \
-              --bind='enter:transform([ -e "$SSHL_FLAG" ] && echo accept || echo abort)' \
-              --prompt='ignored> ') || {
+    local result rc=0
+    result=$(printf '%s\n' "$fzf_input" | multi_select 'ignored> ' "$header") || rc=$?
+    if (( rc == 1 )); then
         echo "No changes." >&2
         return 0
-    }
-
-    [[ -z "$result" ]] && { echo "Nothing selected." >&2; return 0; }
+    fi
+    (( rc == 0 )) || return 1
 
     local -A unignore=()
     local sip line
@@ -66,7 +51,6 @@ popup_ignored() {
     ignored_ips=("${new_ignored_ips[@]}")
     if ! write_ignored; then
         echo "Error: failed to write $IGNORED_FILE. No changes saved." >&2
-        sleep 2.5
         return 1
     fi
     echo "Un-ignored ${#unignore[@]} host(s)." >&2
