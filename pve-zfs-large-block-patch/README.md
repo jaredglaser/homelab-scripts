@@ -35,14 +35,14 @@ chmod +x /usr/local/sbin/pve-zfs-large-block-patch.sh
 
 cat > /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch <<'EOF'
 DPkg::Post-Invoke {
-    "/usr/local/sbin/pve-zfs-large-block-patch.sh || true";
+    "/usr/local/sbin/pve-zfs-large-block-patch.sh || [ $? -lt 126 ] || logger -p daemon.err -t pve-zfs-L-patch -- '/usr/local/sbin/pve-zfs-large-block-patch.sh could not run, so the -L patch was not checked. Run the installer again.'; true";
 };
 EOF
 
 /usr/local/sbin/pve-zfs-large-block-patch.sh
 ```
 
-`|| true` keeps a failed patch from making apt exit with an error after every package has already installed. It also means apt's exit status says nothing about the patch. The log does.
+The rest of the hook line logs a script that could not start, and ends with `true` so a failed patch does not make apt exit with an error after every package has already installed. apt's exit status says nothing about the patch. The log does.
 
 </details>
 
@@ -70,7 +70,7 @@ Every re-patch and every failure is logged:
 journalctl -t pve-zfs-L-patch
 ```
 
-The hook only runs from apt. After `dpkg -i`, run the script by hand, or let the next apt run catch it. If the script is missing or not executable, apt shows a shell error and nothing is logged.
+The hook only runs from apt. After `dpkg -i`, run the script by hand, or let the next apt run catch it. If the script is missing or not executable, apt shows a shell error and the hook logs that the script could not run.
 
 ## Messages
 
@@ -82,7 +82,7 @@ The hook only runs from apt. After `dpkg -i`, run the script by hand, or let the
 | `WARNING` | Upstream changed the file in a way the script does not know. It changes nothing, or patches the known call and lists the other send call it found without `-L`. | Replication of large-record datasets may be broken. Check this repository for an updated script before editing the file by hand. |
 | `FAILED` | Something stopped the patch: the message gives the cause, such as a full disk or a read-only file. | Fix the cause and run the script again. The file is unchanged unless the message names a backup to restore. |
 
-`WARNING` and `FAILED` exit 1 and are logged at `daemon.err`. Because of `|| true`, apt still succeeds, so check the log after updates.
+`WARNING` and `FAILED` exit 1 and are logged at `daemon.err`. apt still succeeds, so check the log after updates.
 
 ## Uninstall and restore
 

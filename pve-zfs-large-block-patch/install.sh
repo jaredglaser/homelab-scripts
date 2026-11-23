@@ -83,7 +83,7 @@ main() {
 hook_text() {
     cat <<EOF
 DPkg::Post-Invoke {
-    "$1 || true";
+    "$1 || [ \$? -lt 126 ] || logger -p daemon.err -t pve-zfs-L-patch -- '$1 could not run, so the -L patch was not checked. Run the installer again.'; true";
 };
 EOF
 }

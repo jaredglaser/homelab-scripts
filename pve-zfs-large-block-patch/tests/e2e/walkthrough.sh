@@ -63,19 +63,19 @@ journal_empty() { [ -z "$(journal)" ]; }
 # An unrelated package, so a check can fire the hook without touching ours.
 poke() { apt_q install --reinstall e2e-poke; }
 
-hook_verbatim() {
-    cat > "$H" <<'EOF'
+hook_verbatim_text() {
+    cat <<'EOF'
 DPkg::Post-Invoke {
-    "/usr/local/sbin/pve-zfs-large-block-patch.sh || true";
+    "/usr/local/sbin/pve-zfs-large-block-patch.sh || [ $? -lt 126 ] || logger -p daemon.err -t pve-zfs-L-patch -- '/usr/local/sbin/pve-zfs-large-block-patch.sh could not run, so the -L patch was not checked. Run the installer again.'; true";
 };
 EOF
 }
+hook_verbatim() { hook_verbatim_text > "$H"; }
 
 # The README's one-liner, with the branch in place of main.
 # shellcheck disable=SC2120 # arguments come through run one_liner --uninstall
 one_liner() { curl -fsSL "$INSTALL_URL" | PVE_ZFS_PATCH_BRANCH="$BRANCH" bash -s -- "$@"; }
 hook_is_verbatim() { cmp -s "$H" <(hook_verbatim_text); }
-hook_verbatim_text() { printf 'DPkg::Post-Invoke {\n    "/usr/local/sbin/pve-zfs-large-block-patch.sh || true";\n};\n'; }
 
 apt_q update >/dev/null 2>&1
 apt_q install pve-manager e2e-poke >/dev/null 2>&1
@@ -175,8 +175,8 @@ check "unpacked state with the file missing warns with that state" has "libpve-s
 dpkg --configure -a >/dev/null 2>&1
 pkg_install 9.1.23 >/dev/null 2>&1
 
-section "Hook without || true"
-sed -i 's/ || true//' "$H"
+section "Hook that passes the script's status to apt"
+printf 'DPkg::Post-Invoke {\n    "%s";\n};\n' "$S" > "$H"
 run pkg_install 9.1.23+syn.shape
 check "apt exits 100 with 'Problem executing scripts'" eval 'rc_is 100 && has "E: Problem executing scripts DPkg::Post-Invoke"'
 check "the package was installed anyway" eval '[ "$(dpkg-query -W -f="\${Version} \${db:Status-Status}" libpve-storage-perl)" = "9.1.23+syn.shape installed" ]'
@@ -193,7 +193,7 @@ mount -t tmpfs -o noexec tmpfs /mnt && cp -a "$S" /mnt/ && mount --bind /mnt/pve
 run poke
 umount "$S"; umount /mnt
 check "noexec: shell error in apt output, apt exits 0" eval 'rc_is 0 && has "$S: Permission denied"'
-check "none of the three reached the journal" journal_empty
+check "each of the three logged that the script could not run" eval '[ "$(journal -p err | grep -c "$S could not run, so the -L patch was not checked")" -eq 3 ]'
 
 section "Immutable file"
 dpkg -i "$REPO/libpve-storage-perl_9.1.23_all.deb" >/dev/null 2>&1

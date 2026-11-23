@@ -17,7 +17,7 @@ setup() {
 }
 
 expected_hook() {
-    printf 'DPkg::Post-Invoke {\n    "%s || true";\n};\n' "$INSTALLED"
+    printf 'DPkg::Post-Invoke {\n    "%s || [ $? -lt 126 ] || logger -p daemon.err -t pve-zfs-L-patch -- '"'"'%s could not run, so the -L patch was not checked. Run the installer again.'"'"'; true";\n};\n' "$INSTALLED" "$INSTALLED"
 }
 
 @test "a fresh install fetches the script from main, writes the hook and patches" {
@@ -31,6 +31,13 @@ expected_hook() {
     [[ "$output" == *"apt hook written"* ]]
     [[ "$output" == *"APPLIED"* ]]
     diff "$FIXTURES/u-patched.pm" "$FILE"
+}
+
+@test "the README's manual hook is the one the installer writes" {
+    run "$INSTALL"
+    [ "$status" -eq 0 ]
+    sed -n '/^DPkg::Post-Invoke {$/,/^};$/p' "$TESTS_DIR/../README.md" \
+        | sed "s#/usr/local/sbin/pve-zfs-large-block-patch.sh#$INSTALLED#g" | diff - "$HOOK"
 }
 
 @test "PVE_ZFS_PATCH_BRANCH picks the branch" {
