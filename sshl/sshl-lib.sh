@@ -176,6 +176,11 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     fi
     key="$(trim "${line%%=*}")"
     value="$(trim "${line#*=}")"
+    # Quotes as in a shell file would otherwise stay in the value, and
+    # terminal="konsole" would look for a command named "konsole" with them.
+    if [[ "$value" == \"*\" || "$value" == \'*\' ]] && (( ${#value} >= 2 )); then
+        value="${value:1:${#value}-2}"
+    fi
     # Windows are matched to overrides by IP, so host.web01.user would
     # never apply.
     if [[ "$key" =~ ^host\.(.+)\.(user|name|left_cmd|right_cmd)$ ]]; then
