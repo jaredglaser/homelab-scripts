@@ -231,6 +231,9 @@ case "${terminal_cmd[${#terminal_cmd[@]}-1]}" in
 esac
 
 require_tmux
+# Every pane, the scan's host names and the status-bar host info use ssh.
+# Without it each pane dies at once with status 127.
+require ssh
 
 # ips.cache mirrors the live tmux session. Each line is `<ip>\t<name>`
 # in display order (NOT IP-sorted). The popup flows mutate the cache

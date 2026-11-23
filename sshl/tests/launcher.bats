@@ -253,3 +253,12 @@ exec '$REAL_TMUX' \"\$@\""
     run session_exists
     [ "$status" -ne 0 ]
 }
+
+@test "sshl: a missing ssh is reported before the session is built" {
+    seed_cache
+    run env -u TMUX PATH="$(path_without ssh)" "$SSHL_SRC/sshl"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Error: 'ssh' is required but not installed"* ]]
+    run session_exists
+    [ "$status" -ne 0 ]
+}
