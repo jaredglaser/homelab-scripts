@@ -29,6 +29,8 @@ $L click 270 500         # click at window coordinates
 $L shot /tmp/step.png    # screenshot
 $L tmux list-windows     # tmux -L homelab as sshlab
 $L down                  # stop everything
+$L many 50                # 50 more hosts on .101 and up
+$L rekey web01            # give a host new SSH host keys
 ```
 
 Look at every screenshot. A wrong message or a cut-off status line only shows on screen.
