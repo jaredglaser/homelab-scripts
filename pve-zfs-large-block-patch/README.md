@@ -2,15 +2,19 @@
 
 Keeps the `-L` (`--large-block`) flag present in Proxmox VE's `zfs send` call inside `/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm`. The file ships in `libpve-storage-perl` and upstream sends without `-L` (`-RpvU` since 9.1.3, `-Rpv` before that), so any update of that package overwrites a manually patched copy. This script re-applies the patch automatically from an apt post-invoke hook.
 
-The script is idempotent. It backs up the file to `/var/backups/pve-zfs-L-patch/` before changing anything, and refuses to patch at all if that backup cannot be written. After patching it confirms no unpatched send site remains, so a partial write is caught.
+The script only ever rewrites two exact lines, `my $cmd = ['zfs', 'send', '-RpvU']` and `my $cmd = ['zfs', 'send', '-Rpv']`, and picks between them by looking at the file, not at the package version. Before changing anything it copies the file to `/var/backups/pve-zfs-L-patch/`, compares the copy with the original byte for byte, and refuses to patch if the copy cannot be written or does not match. If the newest existing backup already holds the same bytes, it reuses that one instead of writing another.
 
-The apt hook discards the exit code by design (see Install), so failures are also sent to syslog. That is a record, not an alarm: nothing alerts on it, but it dates the failure, which re-running the script cannot do. To find out when the patch stopped applying:
+After patching, and also when it finds the file already patched, it checks every `zfs send` call site in the file and stops with a `WARNING` if any of them sends without `-L`. A call site is `'zfs', 'send'` written as a Perl list (single or double quotes, any spacing), or a quoted string that starts with `zfs send`. The site counts as having `-L` when a flag word after it on the same line (a word such as `-RpvUL`), up to the next call site, contains `L`, or when `--large-block` follows it. A site with no flags on its own line, such as one whose flags continue on the next line, counts as missing `-L`. Sites the check flags are reported, never rewritten.
+
+The apt hook discards the exit code by design (see Install), so the script writes to syslog under the tag `pve-zfs-L-patch`: every failure at `daemon.err`, and every re-patch (`APPLIED`) at `daemon.notice`. A run that finds the file already patched, or finds the package absent, logs nothing. That is a record, not an alarm: nothing alerts on it, but it dates each re-patch and each failure, which re-running the script cannot do. To see when the patch was last applied or when it stopped applying:
 
 ```bash
 journalctl -t pve-zfs-L-patch
 ```
 
-To find out whether it applies right now, run the script. It is idempotent and reports current state.
+The record only covers runs that got as far as starting the script. If the script is missing, has lost its execute bit, or sits on a `noexec` mount, the shell prints its error in the apt output, the hook's `|| true` discards the exit code, and nothing reaches syslog.
+
+To find out whether the patch is in place right now, run the script. There is no check-only mode: if the file is unpatched, the run patches it.
 
 > [!WARNING]
 > This patches a Proxmox-managed file. Read `pve-zfs-large-block-patch.sh` before installing it on a production node so you understand exactly what it does.
@@ -35,15 +39,16 @@ The same mismatch breaks replication when migrating a guest to a previously-repl
 
 Run these on the Proxmox node, as root.
 
-1. Download the script and make it executable:
+1. Download the script and make it executable. Read the script first, then set `REV` to the full hash of the commit you read, so a later push to `main` cannot change what you install:
 
    ```bash
+   REV=main   # replace with the commit hash you reviewed
    curl -fsSL -o /usr/local/sbin/pve-zfs-large-block-patch.sh \
-       https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh
+       "https://raw.githubusercontent.com/jaredglaser/homelab-scripts/${REV}/pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh"
    chmod +x /usr/local/sbin/pve-zfs-large-block-patch.sh
    ```
 
-2. Register it as an apt post-invoke hook so it runs after every dpkg invocation:
+2. Register it as an apt post-invoke hook so it runs after every dpkg run that apt drives:
 
    ```bash
    cat > /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch <<'EOF'
@@ -55,6 +60,8 @@ Run these on the Proxmox node, as root.
 
    The `|| true` guard is intentional: without it, a script that exits 1 would abort the surrounding `apt` run. It does mean apt reports success even when the patch failed, which is why failures also go to syslog. Do not treat apt's exit code as evidence the patch applied.
 
+   `DPkg::Post-Invoke` is an apt setting. Running `dpkg` directly (`dpkg -i libpve-storage-perl_*.deb`, `dpkg --configure -a`) can replace the file without running the hook, so run the script by hand after doing that.
+
 3. Apply the patch immediately to confirm it works against the current state of the file:
 
    ```bash
@@ -63,12 +70,15 @@ Run these on the Proxmox node, as root.
 
    All output goes to stderr. Expected output is one of:
 
-   - `OK - patch already present in ... (no changes needed)` if the file is already patched. Exits 0.
-   - `APPLIED - patched ... to add -L flag (backup: ...)` on first run. Exits 0.
-   - `NOT INSTALLED - libpve-storage-perl is absent ...` if the package and the file are both missing. This node has no reason to run the patch, so the message lists the script and the hook file to remove. Exits 0.
-   - `WARNING - libpve-storage-perl is <state> but ... is missing` if the package is present but the file is not. `<state>` is the dpkg state, so it reads `installed`, `half-installed`, `unpacked` and so on. Upstream may have moved the file, and replication of >128K recordsize datasets may be silently broken. Exits 1.
-   - `WARNING - ... does not contain expected pattern` if upstream restructured the send call beyond what the patch knows how to handle. Exits 1.
-   - `FAILED - ...` for anything the script refuses to act on: an unreadable file, a backup that cannot be written, a broken symlink, a target that is not a regular file, or a `dpkg-query` that failed outright. A query reporting the package as absent is not a failure. The file is left untouched. Exits 1.
+   - `OK - patch already present in ... (no changes needed)` if the file is already patched and every call site has `-L`. Exits 0. Not logged.
+   - `APPLIED - patched ... to add -L flag (backup: ...)` when the script rewrote the file. Exits 0. Logged at `daemon.notice`.
+   - `NOT INSTALLED - libpve-storage-perl is absent ...` if the file is missing and dpkg has no record of the package or reports it as `not-installed` or `config-files`. This node has no reason to run the patch, so the message lists the script and the hook file to remove. Exits 0. Not logged.
+   - `WARNING - libpve-storage-perl is <state> but ... is missing` if the file is missing but the package is present. `<state>` is the dpkg state: `installed`, `half-installed`, `unpacked`, `half-configured`, `triggers-awaited` or `triggers-pending`. Upstream may have moved the file, and replication of >128K recordsize datasets may be silently broken. Exits 1.
+   - `WARNING - ... does not contain expected pattern` if the file has neither of the two lines the script rewrites, nor their patched forms. The file is left untouched. Exits 1.
+   - `WARNING - ... still has a zfs send call without -L (line N)` if the call-site check above finds a site without `-L`. Each such line is listed. When this follows a rewrite, the message says the known send call was patched and names the backup. Exits 1.
+   - `FAILED - ...` for anything the script refuses to act on or could not finish: a required command missing, a `dpkg-query` that failed or printed something other than one dpkg status value, a broken symlink, a target that is not a regular file, a read error, a backup directory that cannot be created, a backup copy that fails or does not match the original, a `sed` error, or a file that is not correctly patched after `sed`. A query reporting the package as absent is not a failure. Exits 1.
+
+   Every `FAILED` before the rewrite leaves the file untouched. After a `sed` error the script compares the file with the backup and says either that the file is unchanged or which backup to restore. A failure after the rewrite (the post-patch check, or a read error while checking the result) names the backup to restore.
 
 ## Verify the hook re-applies after an update
 
@@ -92,6 +102,8 @@ Processing triggers for pve-ha-manager (5.2.0) ...
 [pve-zfs-L-patch] APPLIED - patched /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm to add -L flag (backup: /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp>.<pid>)
 ```
 
+The same message is in `journalctl -t pve-zfs-L-patch`. If the reinstalled file is identical to the newest backup, the run says it is reusing that backup and the `APPLIED` line names it.
+
 Then confirm the file actually has the `-L` flag now:
 
 ```bash
@@ -101,11 +113,11 @@ grep -F "send" /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm | grep -F "'zfs'"
 You should see `-RpvUL` on 9.1.3+ or `-RpvL` on older releases. Upstream added `-U` (`--no-preserve-encryption`) in `libpve-storage-perl` 9.1.3.
 
 > [!NOTE]
-> `apt update` only refreshes package indexes and does not invoke dpkg, so it does not trigger `DPkg::Post-Invoke`. Use a dpkg-invoking operation (`apt-get install`, `apt-get upgrade`, `apt-get install --reinstall ...`) when testing.
+> `apt update` only refreshes package indexes and does not invoke dpkg, so it does not trigger `DPkg::Post-Invoke`. Use a dpkg-invoking apt operation (`apt-get install`, `apt-get upgrade`, `apt-get install --reinstall ...`) when testing.
 
 ## Recovery
 
-To restore the upstream copy of `ZFSPoolPlugin.pm` (no `-L` flag), first disable the apt hook so it cannot re-patch on the next dpkg operation:
+To restore the upstream copy of `ZFSPoolPlugin.pm` (no `-L` flag), first disable the apt hook so it cannot re-patch on the next apt-driven dpkg run:
 
 ```bash
 rm /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch
@@ -123,7 +135,7 @@ Then restore the file. Two options:
 
   Simplest for a clean rollback, and includes any package-level changes that have shipped since the patch was first applied.
 
-- **Restore a specific timestamped backup** from `/var/backups/pve-zfs-L-patch/` if you need the exact pre-patch byte image from a particular run (for example, to bisect a regression introduced by a later package update). Backups are named `<timestamp>.<pid>` and are only written once verified against the original:
+- **Restore a specific timestamped backup** from `/var/backups/pve-zfs-L-patch/` if you need the exact pre-patch byte image from a particular run (for example, to bisect a regression introduced by a later package update). Backups are named `<timestamp>.<pid>`, and each one was compared byte for byte with the file it was copied from before the script patched anything. A run whose file matched the newest backup did not write a new one, so one backup can cover several runs:
 
   ```bash
   cp /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp>.<pid> \
@@ -136,13 +148,13 @@ Then restore the file. Two options:
 bats pve-zfs-large-block-patch/tests/
 ```
 
-Run from the repo root. The suite drives the script through two environment overrides so it never touches real paths:
+Run from the repo root. The suite passes as root and as an unprivileged user. It drives the script through two path overrides, which the script honours only when `PVE_ZFS_PATCH_TESTING=1` is also set. In that mode every run prints a `TEST MODE` line naming the paths in use. Without it the script ignores the overrides, says so, and works on the real paths, so an override left exported in a root shell cannot redirect an apt run.
 
 | Variable | Default |
 | --- | --- |
 | `PVE_ZFS_PATCH_FILE_OVERRIDE` | `/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm` |
 | `PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE` | `/var/backups/pve-zfs-L-patch` |
 
-The fixtures under `tests/fixtures/` are a verbatim excerpt of upstream `ZFSPoolPlugin.pm` (`pve-storage.git`, lines 845-872 as of 9.1.10), so the patch is exercised against real surrounding code. Re-cut them from upstream when the send flags change.
+`u.pm` under `tests/fixtures/` is an excerpt of upstream `ZFSPoolPlugin.pm` (`pve-storage.git`, lines 845-872 as of 9.1.10), so the patch is exercised against real surrounding code. `plain.pm` is `u.pm` with the `U` removed from the send flags, not an excerpt of a pre-9.1.3 release, so it still carries the no-preserve-encryption handling a real pre-9.1.3 file would not have. The `-patched.pm` files are the expected results. Re-cut them from upstream when the send flags change.
 
-Production behavior is unchanged when they are unset. `dpkg-query` and `logger` are stubbed on PATH; `dpkg --compare-versions` is not, so the real Debian version ordering is exercised.
+`tests/bin/` is on `PATH` for every test and holds stubs for `dpkg-query` and `logger`. Both record their full argument lists, so the tests assert the package name, the query format, and the syslog priority and tag. Root ignores file modes, so failures are forced with stubs in `tests/stubs/` instead of `chmod`: a `cp` that writes a partial copy, a `sed` that fails or does nothing, and a `grep` that reports a read error. A test links one in with `with_stub` for that test only. A backup directory whose parent is a regular file covers the `mkdir` failure.
