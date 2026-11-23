@@ -93,8 +93,29 @@ attach_cmd=("${TMUX_CMD[@]}" new-session -t "=$session_name" \;
 # The new terminal must not inherit TMUX: tmux refuses to start a client
 # inside another one, and the terminal is a separate window anyway.
 if command -v "${terminal_cmd[0]}" &>/dev/null; then
-    env -u TMUX -u TMUX_PANE "${terminal_cmd[@]}" -e "${attach_cmd[@]}" &
-    disown
+    # The terminal must not hold this script's output: a pipe or $(sshl)
+    # would wait until the window closes, and its warnings would land in
+    # the shell sshl was started from. A terminal that rejects its
+    # arguments exits within moments, so wait briefly to report that.
+    term_log="$(mktemp)"
+    env -u TMUX -u TMUX_PANE "${terminal_cmd[@]}" -e "${attach_cmd[@]}" \
+        </dev/null >"$term_log" 2>&1 &
+    term_pid=$!
+    for _ in 1 2 3 4 5; do
+        sleep 0.1
+        kill -0 "$term_pid" 2>/dev/null && continue
+        term_rc=0
+        wait "$term_pid" || term_rc=$?
+        if (( term_rc != 0 )); then
+            cat "$term_log" >&2
+            rm -f "$term_log"
+            echo "Error: the terminal command '${terminal_cmd[*]}' exited with status $term_rc. Check the terminal= line in $CONFIG_FILE." >&2
+            exit 1
+        fi
+        break
+    done
+    rm -f "$term_log"
+    disown "$term_pid" 2>/dev/null || true
 elif [[ -n "${TMUX:-}" ]]; then
     if [[ "${TMUX%%,*}" == "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKET" ]]; then
         echo "Terminal '${terminal_cmd[0]}' not found, and this shell already runs inside the sshl session." >&2

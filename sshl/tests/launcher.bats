@@ -145,3 +145,27 @@ exec '$REAL_TMUX' \"\$@\""
     [[ "$output" == *"inside another tmux server"* ]]
     [[ "$output" == *"tmux -L $SOCKET new-session -t '=$session_name'"* ]]
 }
+
+@test "sshl: returns at once when its output is a pipe, and the terminal's output stays out of it" {
+    seed_cache
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd chatty-term 'echo $$ > "$SSHL_DATA_DIR_OVERRIDE/term.pid"
+echo "terminal stdout chatter"
+echo "terminal stderr chatter" >&2
+exec sleep 30'
+    set_config terminal chatty-term
+    run timeout 10 bash -c 'env -u TMUX "$1" 2>&1 | cat' _ "$SSHL_SRC/sshl"
+    kill "$(cat "$SSHL_DATA_DIR_OVERRIDE/term.pid")" 2>/dev/null || true
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"chatter"* ]]
+}
+
+@test "sshl: a terminal that fails at once is reported with its error" {
+    seed_cache
+    stub_cmd broken-term 'echo "broken-term: unknown option --bogus" >&2; exit 2'
+    set_config terminal broken-term
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"broken-term: unknown option --bogus"* ]]
+    [[ "$output" == *"Error: the terminal command 'broken-term' exited with status 2"* ]]
+}

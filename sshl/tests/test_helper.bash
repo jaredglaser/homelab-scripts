@@ -27,7 +27,7 @@ sshl_setup() {
 subnet=192.0.2.0/24
 session_name=test-homelab
 default_user=testuser
-terminal=false
+terminal=true
 left_cmd=sleep 30
 right_cmd=sleep 30
 EOF
