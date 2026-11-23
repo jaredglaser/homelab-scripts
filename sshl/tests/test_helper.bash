@@ -27,7 +27,10 @@ EOF
     printf '#!/usr/bin/env bash\necho "test"\n' > "$SSHL_DIR_OVERRIDE/host-info.sh"
     chmod +x "$SSHL_DIR_OVERRIDE/host-info.sh"
 
-    export PATH="$TEST_BIN:$PATH"
+    STUB_BIN="$SSHL_DIR_OVERRIDE/stub-bin"
+    mkdir -p "$STUB_BIN"
+    REAL_TMUX="$(command -v tmux)"
+    export PATH="$STUB_BIN:$TEST_BIN:$PATH"
 
     unset _SSHL_LIB
     source "$SSHL_SRC/sshl-lib.sh"
@@ -75,4 +78,43 @@ wait_for_window_count() {
     done
     echo "Timeout waiting for window count: expected $expected, got $count" >&2
     return 1
+}
+
+# Write an executable stub that shadows a command for the current test only.
+stub_cmd() {
+    local name="$1" body="$2"
+    printf '#!/usr/bin/env bash\n%s\n' "$body" > "$STUB_BIN/$name"
+    chmod +x "$STUB_BIN/$name"
+    # Without this, a command the test already ran stays hashed to its real path.
+    hash -r
+}
+
+# Shadow tmux with a shim that fails split-window for one host, so
+# add_window gives up on that host after its window already exists.
+fail_split_for_host() {
+    stub_cmd tmux "if [[ \" \$* \" == *' split-window '* && \" \$* \" == *' HOST_IP=$1 '* ]]; then
+    echo 'simulated split-window failure' >&2
+    exit 1
+fi
+exec '$REAL_TMUX' \"\$@\""
+}
+
+# Attach a real client to session_name through a grouped session, the way
+# sshl's attach command does, and wait until tmux reports it attached.
+attach_grouped_client() {
+    TERM=xterm-256color script -qfc "tmux -L '$SOCKET' new-session -t '$session_name'" /dev/null \
+        >/dev/null 2>&1 3>&- &
+    local i
+    for i in $(seq 1 100); do
+        tmux -L "$SOCKET" list-sessions -F '#{session_group} #{session_attached}' 2>/dev/null \
+            | grep -qx "$session_name 1" && return 0
+        sleep 0.1
+    done
+    echo "Timeout waiting for a grouped client on $session_name" >&2
+    return 1
+}
+
+# @host_ip of each window in session_name, in index order, space separated.
+live_order() {
+    tmux -L "$SOCKET" list-windows -t "=$session_name" -F '#{@host_ip}' | grep . | tr '\n' ' '
 }
