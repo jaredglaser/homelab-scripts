@@ -160,6 +160,7 @@ apply_scan_diff() {
     # Live tmux changes. Failures are recoverable via 'sshl --rebuild'
     # since the cache is now authoritative.
     local has_session=0
+    local -a no_window=()
     session_exists && has_session=1
     if (( has_session )); then
         # Remove first so freed slots don't leave stale tabs visible
@@ -168,14 +169,20 @@ apply_scan_diff() {
             kill_host_window "$ip"
         done
         for ip in "${_to_add[@]}"; do
-            add_window "$ip"
+            add_window "$ip" || no_window+=("$ip")
         done
     fi
 
     refresh_session_options
     echo "Added ${#_to_add[@]}, removed ${#_to_remove[@]}." >&2
+    if (( ${#no_window[@]} > 0 )); then
+        echo "No window for ${#no_window[@]} host(s): $(format_host_list "${no_window[@]}")." >&2
+        echo "They are saved in the cache. Fix the cause above and run 'sshl --rebuild' to retry." >&2
+    fi
     # Brief pause so the message is visible before the popup closes.
-    if (( has_session )); then sleep 1.2; fi
+    if (( has_session )); then
+        if (( ${#no_window[@]} > 0 )); then sleep 2.5; else sleep 1.2; fi
+    fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then popup_scan; fi

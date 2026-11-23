@@ -317,7 +317,8 @@ set_session_env() {
 
 # Add a window for a host. With --first, opens the session via
 # new-session (caller must guarantee no session exists yet). Without
-# --first, appends a window to the existing session.
+# --first, appends a window to the existing session. Returns 1, with any
+# partial window already killed, when the host gets no usable window.
 add_window() {
     local first=false
     if [[ "${1:-}" == "--first" ]]; then first=true; shift; fi
@@ -334,13 +335,9 @@ add_window() {
     local env_args=(-e "HOST_IP=$ip" -e "HOST_NAME=$name" -e "HOST_USER=$user")
     local wid
     if $first; then
-        "${TMUX_CMD[@]}" -f "$TMUX_CONF" new-session -d -s "$session_name" \
-            -n "$name" "${env_args[@]}" "$left" || {
-            echo "Error: failed to create initial session for $ip ($name)" >&2
-            return 1
-        }
-        wid=$("${TMUX_CMD[@]}" display-message -p -t "=$session_name:$name" '#{window_id}' 2>/dev/null) || {
-            echo "Error: created session for $ip but could not resolve its window-id" >&2
+        wid=$("${TMUX_CMD[@]}" -f "$TMUX_CONF" new-session -d -s "$session_name" \
+            -n "$name" -P -F '#{window_id}' "${env_args[@]}" "$left") || {
+            echo "Warning: failed to open the session with $ip ($name), skipping" >&2
             return 1
         }
     else
@@ -354,7 +351,11 @@ add_window() {
     # Set @host_ip BEFORE any other configuration. If a later step
     # fails, the window still shows up in find_window_id_by_ip and
     # kill_host_window can clean up the orphan.
-    "${TMUX_CMD[@]}" set-option -w -t "$wid" @host_ip "$ip"
+    if ! "${TMUX_CMD[@]}" set-option -w -t "$wid" @host_ip "$ip"; then
+        echo "Warning: failed to tag the window for $ip ($name), killing partial window" >&2
+        "${TMUX_CMD[@]}" kill-window -t "$wid" 2>/dev/null || true
+        return 1
+    fi
 
     # Structural: the right pane is core to the per-host UI. If it
     # fails, kill the partial window rather than leave half a layout.
@@ -388,40 +389,71 @@ kill_host_window() {
     "${TMUX_CMD[@]}" kill-window -t "$wid" 2>/dev/null || true
 }
 
+# kill-server, or killing a session's last window, returns before the
+# socket finishes tearing down. The next tmux command can race into the
+# dying server and abort with "server exited unexpectedly". Wait for
+# list-sessions to confirm the server is gone (cap at ~1s so a wedged
+# server still surfaces).
+wait_for_server_exit() {
+    local _
+    for _ in {1..50}; do
+        "${TMUX_CMD[@]}" list-sessions >/dev/null 2>&1 || return 0
+        sleep 0.02
+    done
+}
+
+# "ip (name), ip (name)" for the hosts given, for messages that name them.
+format_host_list() {
+    local out="" ip
+    for ip in "$@"; do
+        out+="${out:+, }$ip ($(resolve_hostname "$ip"))"
+    done
+    printf '%s' "$out"
+}
+
 build_session() {
     # Nuke the whole server, not just the base session. `kill-session
     # -t =homelab` leaves grouped sessions (open konsoles) running with
     # stale windows. kill-server detaches every konsole and ensures
     # the next attach sees the fresh session.
     "${TMUX_CMD[@]}" kill-server 2>/dev/null || true
-
-    # kill-server returns before the socket finishes tearing down. The
-    # next tmux command can race into the dying server and abort with
-    # "server exited unexpectedly". Wait for list-sessions to confirm
-    # the server is gone (cap at ~1s so a wedged server still surfaces).
-    local i
-    for i in {1..50}; do
-        "${TMUX_CMD[@]}" list-sessions >/dev/null 2>&1 || break
-        sleep 0.02
-    done
+    wait_for_server_exit
 
     if [[ ${#ips[@]} -eq 0 ]]; then
         echo "Error: cache is empty; nothing to build." >&2
         return 1
     fi
 
-    add_window --first "${ips[0]}"
-    set_session_options
-
-    local ip
-    for ip in "${ips[@]:1}"; do
-        add_window "$ip"
+    # Skip a failing host instead of aborting. An aborted build is never
+    # marked complete, so every later run would rebuild and fail at the
+    # same host, and the scan popup that could remove it needs a session.
+    local ip opened=false
+    local -a skipped=()
+    for ip in "${ips[@]}"; do
+        if $opened; then
+            add_window "$ip" || skipped+=("$ip")
+        elif add_window --first "$ip"; then
+            opened=true
+            set_session_options
+        else
+            skipped+=("$ip")
+            wait_for_server_exit
+        fi
     done
+
+    if ! $opened; then
+        echo "Error: no host got a window, so there is no session to attach to. See the warnings above." >&2
+        return 1
+    fi
 
     "${TMUX_CMD[@]}" select-window -t "$session_name:^"
     # Set last so an aborted build leaves the marker unset. The next
     # session_is_healthy check then forces a clean rebuild.
     "${TMUX_CMD[@]}" set-option -g @build_complete 1
+
+    if (( ${#skipped[@]} > 0 )); then
+        echo "Skipped ${#skipped[@]} host(s): $(format_host_list "${skipped[@]}"). Fix the cause above and run 'sshl --rebuild' to retry." >&2
+    fi
 }
 
 # Update @cache_mtime after popup-driven cache writes so the status
