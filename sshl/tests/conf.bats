@@ -51,7 +51,7 @@ term_hides() {
         tmux -L "$SOCKET" list-keys -T prefix "$key" | grep -q "bind-key -T prefix $key "
     done
     tmux -L "$SOCKET" list-keys -T prefix S | grep -q 'display-popup -EE'
-    [ "$(tmux -L "$SOCKET" show -gv remain-on-exit)" = "failed" ]
+    [ "$(tmux -L "$SOCKET" show -gv remain-on-exit)" = "on" ]
     [ "$(tmux -L "$SOCKET" show -gv @info_script)" = "$SSHL_SRC/host-info.sh" ]
 }
 
@@ -101,6 +101,16 @@ term_hides() {
     term_keys C-b r
     wait_until 5 term_shows "respawned the dead panes, refreshing fake-host-01"
     wait_until 5 dead_count_is 0
+}
+
+@test "a clean exit in both panes keeps the host's window, so it still matches the cache" {
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.1" "exit 0"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 0"
+    dead_count_is_2() {
+        [ "$(tmux -L "$SOCKET" list-panes -t "=$session_name:" -F '#{pane_dead}' | grep -c 1)" -eq 2 ]
+    }
+    wait_until 5 dead_count_is_2
+    [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
 }
 
 @test "pane-died: the message names the window" {
