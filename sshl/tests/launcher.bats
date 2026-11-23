@@ -1,0 +1,147 @@
+#!/usr/bin/env bats
+# shellcheck disable=SC2154  # session_name is set by sshl-lib.sh
+
+load test_helper
+bats_require_minimum_version 1.5.0
+
+setup() {
+    sshl_setup
+    install_tmux_guard
+}
+
+teardown() {
+    local refused=""
+    [[ -s "${TMUX_GUARD_LOG:-}" ]] && refused="$(cat "$TMUX_GUARD_LOG")"
+    sshl_teardown
+    if [[ -n "$refused" ]]; then
+        echo "$refused" >&2
+        return 1
+    fi
+}
+
+seed_cache() {
+    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+}
+
+set_config() {
+    sed -i "/^$1=/d" "$SSHL_DATA_DIR_OVERRIDE/config"
+    printf '%s=%s\n' "$1" "$2" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+}
+
+# A terminal emulator that logs its environment and arguments, then runs
+# the command after -e in a pane of the terminal server attach_client_in_terminal
+# uses, as konsole would in a window of its own.
+install_fake_terminal() {
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd fake-term 'log="$SSHL_DATA_DIR_OVERRIDE/term.log"
+printf "TMUX=%s\n" "${TMUX:-}" > "$log"
+printf "%s\n" "$@" >> "$log"
+while (( $# )) && [[ "$1" != -e ]]; do shift; done
+shift
+cmd="$(printf "%q " "$@")"
+exec "$REAL_TMUX" -L "$SSHL_SOCKET_OVERRIDE-term" -f /dev/null new-session -d -s term -x 120 -y 40 \
+    "env -u TMUX TERM=xterm-256color script -qfc $(printf "%q" "$cmd") /dev/null"'
+}
+
+@test "sshl: an unknown argument fails and names it" {
+    run "$SSHL_SRC/sshl" --bogus
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unknown argument: --bogus"* ]]
+    run session_exists
+    [ "$status" -ne 0 ]
+}
+
+@test "sshl: --help prints the usage and exits 0" {
+    run "$SSHL_SRC/sshl" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == Usage:* ]]
+    [[ "$output" == *"--rebuild"* ]]
+}
+
+@test "sshl: --rebuild without a cache fails" {
+    run env -u TMUX "$SSHL_SRC/sshl" --rebuild
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"no cache to rebuild from"* ]]
+}
+
+@test "sshl: --rebuild replaces a healthy session with one built from the cache" {
+    printf '192.0.2.1\tfake-host-01\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    tmux -L "$SOCKET" new-window -t "=$session_name:" -n stray "sleep 30"
+    seed_cache
+    run env -u TMUX "$SSHL_SRC/sshl" -R
+    [ "$status" -eq 0 ]
+    [ "$(tmux -L "$SOCKET" list-windows -t "=$session_name" -F '#{window_name}' | tr '\n' ' ')" = "fake-host-01 fake-host-02 " ]
+    session_is_healthy
+}
+
+@test "sshl: runs through a symlink" {
+    seed_cache
+    mkdir "$SSHL_DATA_DIR_OVERRIDE/bin"
+    ln -s "$SSHL_SRC/sshl" "$SSHL_DATA_DIR_OVERRIDE/bin/sshl"
+    run env -u TMUX "$SSHL_DATA_DIR_OVERRIDE/bin/sshl"
+    [ "$status" -eq 0 ]
+    [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
+}
+
+@test "sshl: status lines go to stderr" {
+    seed_cache
+    read_cache
+    build_session
+    run --separate-stderr env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+    # shellcheck disable=SC2154  # set by run --separate-stderr
+    [[ "$stderr" == *"Reusing existing session '$session_name'"* ]]
+}
+
+@test "sshl: a failed reload of homelab.tmux.conf is shown" {
+    seed_cache
+    read_cache
+    build_session
+    stub_cmd tmux "if [[ \" \$* \" == *' source-file '* ]]; then echo 'homelab.tmux.conf:3: unknown command: bogus' >&2; exit 1; fi
+exec '$REAL_TMUX' \"\$@\""
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warning: reloading $SSHL_SRC/homelab.tmux.conf failed"* ]]
+    [[ "$output" == *"unknown command: bogus"* ]]
+}
+
+@test "sshl: from inside another tmux, the terminal starts without TMUX and attaches" {
+    seed_cache
+    install_fake_terminal
+    set_config terminal fake-term
+    run env TMUX="/tmp/tmux-other/default,1,0" "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    wait_for_grouped_client
+    [ "$(head -n1 "$SSHL_DATA_DIR_OVERRIDE/term.log")" = "TMUX=" ]
+}
+
+@test "sshl: a terminal with arguments gets them before -e" {
+    seed_cache
+    install_fake_terminal
+    set_config terminal "fake-term --profile x"
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    wait_for_grouped_client
+    [ "$(sed -n '2,4p' "$SSHL_DATA_DIR_OVERRIDE/term.log" | tr '\n' ' ')" = "--profile x -e " ]
+}
+
+@test "sshl: without a terminal, inside the sshl server it says so" {
+    seed_cache
+    set_config terminal no-such-terminal
+    run env TMUX="${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKET,1,0" "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"already runs inside the sshl session"* ]]
+    [[ "$output" != *"different server"* && "$output" != *"another tmux server"* ]]
+}
+
+@test "sshl: without a terminal, inside another tmux it prints the attach command" {
+    seed_cache
+    set_config terminal no-such-terminal
+    run env TMUX="/tmp/tmux-other/default,1,0" "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"inside another tmux server"* ]]
+    [[ "$output" == *"tmux -L $SOCKET new-session -t '=$session_name'"* ]]
+}

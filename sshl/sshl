@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SSHL_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-
 rebuild=false
 for arg in "$@"; do
     case "$arg" in
@@ -23,11 +21,13 @@ Inside the session, use these key bindings to manage hosts:
   prefix H    Fuzzy jump to a host
 EOF
             exit 0 ;;
-        *) echo "Unknown argument: $arg" >&2; exit 1 ;;
+        *) echo "Unknown argument: $arg. Run '$(basename "$0") --help' for the options." >&2; exit 1 ;;
     esac
 done
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# readlink -f so a symlink to sshl (say in ~/bin) still finds the library.
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 read_cache
 read_ignored
@@ -48,8 +48,8 @@ elif ! session_is_healthy; then
         "${SSHL_DIR}/popup-scan.sh"
         read_cache
         # popup-scan.sh already printed why nothing was applied (cancelled,
-        # nothing to show, no selection, write failure). Exit quietly
-        # rather than tacking on a generic catch-all message.
+        # nothing to show, no selection). Exit quietly rather than tacking
+        # on a generic catch-all message.
         if [[ ${#ips[@]} -eq 0 ]]; then
             exit 0
         fi
@@ -73,28 +73,36 @@ done
 disown -a 2>/dev/null || true
 
 # Reload conf so edits to homelab.tmux.conf take effect without --rebuild.
-"${TMUX_CMD[@]}" source-file "$TMUX_CONF" 2>/dev/null || true
+if ! conf_err="$("${TMUX_CMD[@]}" source-file "$TMUX_CONF" 2>&1)"; then
+    echo "Warning: reloading $TMUX_CONF failed, so the session may run an older copy of it:" >&2
+    printf '%s\n' "$conf_err" >&2
+fi
 
-# Refresh the global env each run. New popups spawn fresh shells that
-# inherit this env, so the popup bindings find $SSHL_DIR / $SSHL_BIN
-# even on sessions built by an older sshl that never set them.
+# Refresh the global env each run, so the popup bindings find the
+# scripts even on a session built by an older sshl.
 session_exists && set_session_env
 
-$built || echo "Reusing existing session '$session_name' (use --rebuild to recreate)."
+$built || echo "Reusing existing session '$session_name' (use --rebuild to recreate)." >&2
 
 # Grouped attach: a new session sharing the base session's windows but
 # with its own focus. destroy-unattached cleans up when the konsole
 # closes.
-attach_cmd=("${TMUX_CMD[@]}" new-session -t "$session_name" \;
+attach_cmd=("${TMUX_CMD[@]}" new-session -t "=$session_name" \;
             set-option destroy-unattached on)
 
-if [[ -n "${TMUX:-}" ]]; then
-    echo "Already inside a tmux session (different server)."
-    echo "Run from a fresh terminal, or: tmux -L $SOCKET new-session -t $session_name"
-elif command -v "$terminal" &>/dev/null; then
-    "$terminal" -e "${attach_cmd[@]}" &
+# The new terminal must not inherit TMUX: tmux refuses to start a client
+# inside another one, and the terminal is a separate window anyway.
+if command -v "${terminal_cmd[0]}" &>/dev/null; then
+    env -u TMUX -u TMUX_PANE "${terminal_cmd[@]}" -e "${attach_cmd[@]}" &
     disown
+elif [[ -n "${TMUX:-}" ]]; then
+    if [[ "${TMUX%%,*}" == "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/$SOCKET" ]]; then
+        echo "Terminal '${terminal_cmd[0]}' not found, and this shell already runs inside the sshl session." >&2
+    else
+        echo "Terminal '${terminal_cmd[0]}' not found, and this shell runs inside another tmux server." >&2
+        echo "Run from a fresh terminal, or: tmux -L $SOCKET new-session -t '=$session_name'" >&2
+    fi
 else
-    echo "Terminal '$terminal' not found; attaching in current shell." >&2
+    echo "Terminal '${terminal_cmd[0]}' not found, so attaching in this shell." >&2
     "${attach_cmd[@]}"
 fi
