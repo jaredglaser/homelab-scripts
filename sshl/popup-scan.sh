@@ -27,9 +27,11 @@ popup_scan() {
 
     local -A in_cache=()
     local -A in_ignored=()
+    local -A in_scan=()
     local ip
     for ip in "${ips[@]}";         do in_cache["$ip"]=1; done
     for ip in "${ignored_ips[@]}"; do in_ignored["$ip"]=1; done
+    for ip in "${discovered_ips[@]}"; do in_scan["$ip"]=1; done
 
     # Combined list: cache order first, then discovered newcomers.
     local -a entries=()
@@ -50,11 +52,17 @@ popup_scan() {
 
     # Padded tag so columns align and awk still sees one token per
     # field (whitespace-separated).
+    # A host that moved to a new address shows up twice, as a CURRENT row
+    # at the old address and a NEW row at the new one, so say which of
+    # the two the scan no longer sees.
     local fzf_input="" name display_name tag
     for ip in "${entries[@]}"; do
         name="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
         display_name="${name:--}"
         tag="${entry_tag[$ip]}"
+        if [[ "$tag" == CURRENT && -z "${in_scan[$ip]:-}" ]]; then
+            display_name+="  (not found by this scan)"
+        fi
         printf -v fzf_input '%s%-7s  %-15s  %s\n' "$fzf_input" "$tag" "$ip" "$display_name"
     done
     fzf_input="${fzf_input%$'\n'}"
