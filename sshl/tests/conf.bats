@@ -113,6 +113,17 @@ term_hides() {
     [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
 }
 
+@test "status bar: the IP sits after the host name on row 1, once, and not on row 0" {
+    local win row1 right
+    win="$(find_window_id_by_ip 192.0.2.1)"
+    row1="$(tmux -L "$SOCKET" show -gv 'status-format[1]')"
+    right="$(tmux -L "$SOCKET" display -p -t "$win" "$(tmux -L "$SOCKET" show -gv status-right)")"
+    [[ "$right" != *192.0.2.1* ]]
+    [[ "$(tmux -L "$SOCKET" display -p -t "$win" "$row1")" == *"fake-host-01 #[fg=colour244]192.0.2.1#[fg=colour252] "* ]]
+    tmux -L "$SOCKET" set -w -t "$win" @host_name 192.0.2.1
+    [ "$(tmux -L "$SOCKET" display -p -t "$win" "$row1" | grep -o '192\.0\.2\.1' | wc -l)" -eq 1 ]
+}
+
 @test "pane-died: the message names the window" {
     attach_client_in_terminal
     tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 3"

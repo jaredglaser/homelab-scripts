@@ -7,7 +7,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 # Run nmap, present a multi-select fzf where each row carries an
 # explicit action tag: CURRENT (already a window) or NEW (just found).
 # Ticking acts on the row in the obvious way:
-#   tick CURRENT → kill window + add to ignored
+#   tick CURRENT → kill window, and ignore it if the scan found it
 #   tick NEW     → add window + cache it
 #   untouched    → no-op
 #
@@ -68,7 +68,7 @@ popup_scan() {
 
     local header
     header=$'space or tab tick and move down • enter apply • esc cancel\n'
-    header+='tick CURRENT to remove (and ignore)  •  tick NEW to add  •  leave alone for no change'
+    header+='tick CURRENT to remove  •  tick NEW to add  •  leave alone for no change'
 
     local result rc=0
     result=$(printf '%s\n' "$fzf_input" | multi_select 'hosts> ' "$header") || rc=$?
@@ -109,11 +109,13 @@ apply_scan_diff() {
     local final_count=$(( ${#ips[@]} - ${#_to_remove[@]} + ${#_to_add[@]} ))
     if (( final_count <= 0 )); then
         echo "Refusing: that would remove every host, and the session closes with its last window." >&2
-        echo "To start over with a scan, run 'tmux -L $SOCKET kill-server', delete $CACHE_FILE, and run sshl again." >&2
+        echo "To start over with a scan, delete $CACHE_FILE and run 'sshl --rebuild'." >&2
         return 1
     fi
 
     local ip c
+    local -A found=()
+    for ip in "${discovered_ips[@]}"; do found["$ip"]=1; done
 
     # Mutate in-memory state to the target shape (cache mirror, no
     # live tmux yet).
@@ -121,9 +123,13 @@ apply_scan_diff() {
         local -a new_ips=()
         for c in "${ips[@]}"; do [[ "$c" != "$ip" ]] && new_ips+=("$c"); done
         ips=("${new_ips[@]}")
-        ignored_ips+=("$ip")
-        # shellcheck disable=SC2034  # write_ignored reads it through a nameref
-        ignored_name["$ip"]="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
+        # Only a host the scan still sees is ignored. One that is gone may
+        # come back as a new machine on the same IP, and should show as NEW.
+        if [[ -n "${found[$ip]:-}" ]]; then
+            ignored_ips+=("$ip")
+            # shellcheck disable=SC2034  # write_ignored reads it through a nameref
+            ignored_name["$ip"]="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
+        fi
         unset 'cached_name[$ip]'
     done
     for ip in "${_to_add[@]}"; do

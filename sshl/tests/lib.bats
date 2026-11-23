@@ -369,8 +369,18 @@ echo "Nmap done: 0 IP addresses (0 hosts up) scanned in 0.03 seconds"'
     run scan_subnet
     [ "$status" -eq 1 ]
     [[ "$output" == *'Failed to resolve "lan".'* ]]
-    [[ "$output" == *"Error: nmap could not read the subnet '$subnet'. Set subnet= in $CONFIG_FILE to a range in CIDR notation, such as 192.168.1.0/24."* ]]
+    [[ "$output" == *"Error: nmap could not read the subnet '$subnet'. Set subnet= in $CONFIG_FILE to one or more ranges in CIDR notation"* ]]
     [[ "$output" != *"No live hosts found"* ]]
+}
+
+@test "scan_subnet: several subnets, split on spaces or commas, each reach nmap as a target" {
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd nmap 'printf "%s\n" "$@" > "$SSHL_DATA_DIR_OVERRIDE/nmap.args"'
+    subnet="192.0.2.0/24  198.51.100.0/24,203.0.113.0/25"
+    scan_subnet 2>/dev/null
+    grep -qx '192.0.2.0/24' "$SSHL_DATA_DIR_OVERRIDE/nmap.args"
+    grep -qx '198.51.100.0/24' "$SSHL_DATA_DIR_OVERRIDE/nmap.args"
+    grep -qx '203.0.113.0/25' "$SSHL_DATA_DIR_OVERRIDE/nmap.args"
 }
 
 @test "scan_subnet: a netmask nmap rejects fails instead of scanning one host" {

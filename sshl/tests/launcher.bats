@@ -61,21 +61,25 @@ exec "$REAL_TMUX" -L "$SSHL_SOCKET_OVERRIDE-term" -f /dev/null new-session -d -s
     [[ "$output" == *"Config: $SSHL_DATA_DIR_OVERRIDE/config"* ]]
 }
 
-@test "sshl: --rebuild without a cache fails" {
+@test "sshl: --rebuild without a cache starts over with a scan" {
+    stub_fzf 'grep "^NEW"'
     run env -u TMUX "$SSHL_SRC/sshl" --rebuild
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"no cache to rebuild from"* ]]
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Scanning"* ]]
+    [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
+    session_is_healthy
 }
 
-@test "sshl: --rebuild without a cache, while the session runs, says how to start over" {
-    seed_cache
+@test "sshl: --rebuild without a cache, while the session runs, replaces it with a scan" {
+    printf '192.0.2.9\tgone-host\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     build_session
     : > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    stub_fzf 'grep "^NEW"'
     run env -u TMUX "$SSHL_SRC/sshl" --rebuild
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"session '$session_name' is still running"*"run 'tmux -L $SOCKET kill-server', then sshl with no args"* ]]
-    session_exists
+    [ "$status" -eq 0 ]
+    [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
+    session_is_healthy
 }
 
 @test "sshl: --rebuild replaces a healthy session with one built from the cache" {
@@ -157,7 +161,7 @@ exec '$REAL_TMUX' \"\$@\""
     run env TMUX="/tmp/tmux-other/default,1,0" "$SSHL_SRC/sshl"
     [ "$status" -eq 0 ]
     [[ "$output" == *"inside another tmux server"* ]]
-    [[ "$output" == *"tmux -L $SOCKET new-session -t '=$session_name'"* ]]
+    [[ "$output" == *"tmux -L $SOCKET -u new-session -t '=$session_name'"* ]]
 }
 
 @test "sshl: returns at once when its output is a pipe, and the terminal's output stays out of it" {
