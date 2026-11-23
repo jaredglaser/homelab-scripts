@@ -108,6 +108,7 @@ syslog_line() {
     [ "$status" -eq 1 ]
     [[ "$output" == *"FAILED - cannot create $PATCH_TMP/not-a-dir/backups"* ]]
     [[ "$output" == *"without a backup"* ]]
+    grep -F -- "-p daemon.err -t pve-zfs-L-patch -- cannot create $PATCH_TMP/not-a-dir/backups: mkdir: " "$FAKE_SYSLOG"
     [[ "$output" != *"APPLIED"* ]]
     diff "$FIXTURES/u.pm" "$FILE"
 }
@@ -121,6 +122,8 @@ syslog_line() {
     [[ "$output" == *"without a backup"* ]]
     diff "$FIXTURES/u.pm" "$FILE"
     [ "$(backup_count)" -eq 0 ]
+    # The journal gets only the first message line, so the cause must be on it.
+    grep -F -- "-p daemon.err -t pve-zfs-L-patch -- backup to $BACKUPS/" "$FAKE_SYSLOG" | grep -F "No space left on device"
 }
 
 @test "refuses to patch when the backup copy reports success but differs" {
@@ -167,10 +170,11 @@ syslog_line() {
     with_stub sed
     run "$SCRIPT"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"sed returned an error"* ]]
-    [[ "$output" == *"unchanged"* ]]
+    [[ "$output" == *"sed could not patch $FILE: sed: couldn't edit $FILE: I/O error"* ]]
+    [[ "$output" == *"unchanged"*"lsattr"* ]]
     [[ "$output" != *"Restore"* ]]
     diff "$FIXTURES/u.pm" "$FILE"
+    syslog_line daemon.err "sed could not patch $FILE: sed: couldn't edit $FILE: I/O error" | diff - "$FAKE_SYSLOG"
 }
 
 @test "a sed error that changed the file points at the backup" {
@@ -179,7 +183,7 @@ syslog_line() {
     export FAKE_SED_MODE=fail-changed
     run "$SCRIPT"
     [ "$status" -eq 1 ]
-    [[ "$output" == *"sed returned an error"* ]]
+    [[ "$output" == *"sed could not patch $FILE: sed: couldn't edit $FILE: I/O error"* ]]
     [[ "$output" == *"Restore $(only_backup)"* ]]
 }
 

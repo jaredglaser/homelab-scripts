@@ -229,8 +229,9 @@ if [ "${#sed_args[@]}" -eq 0 ]; then
 fi
 
 # Snapshot the file before touching it, because rollback depends on these backups.
-mkdir -p "$BACKUP_DIR" || fail "cannot create $BACKUP_DIR." \
-                               "Refusing to patch $FILE without a backup."
+# Tool errors go into the first message line, the only one syslog records.
+mkdir_err=$(mkdir -p "$BACKUP_DIR" 2>&1) || fail "cannot create $BACKUP_DIR: ${mkdir_err:-no error text}" \
+                                                 "Refusing to patch $FILE without a backup."
 
 # A write that keeps failing (immutable file, read-only /usr) would otherwise
 # add an identical copy on every apt run. Names sort by timestamp in C locale.
@@ -245,10 +246,10 @@ if [ -n "$newest" ] && cmp -s "$FILE" "$newest"; then
 else
     backup="${BACKUP_DIR}/ZFSPoolPlugin.pm.prepatch.$(date +%Y%m%d-%H%M%S).$$"
     # cp needs -L: -a implies --no-dereference, and the target can be a symlink.
-    if ! cp -aL "$FILE" "$backup"; then
+    if ! cp_err=$(cp -aL "$FILE" "$backup" 2>&1); then
         rm -f "$backup"
-        fail "backup to $backup failed (full or read-only /var?)." \
-             "Refusing to patch $FILE without a backup."
+        fail "backup to $backup failed: ${cp_err:-no error text}" \
+             "Refusing to patch $FILE without a backup. Free space in $BACKUP_DIR or make it writable, then re-run."
     fi
     if ! cmp -s "$FILE" "$backup"; then
         rm -f "$backup"
@@ -260,12 +261,12 @@ fi
 # sed -i writes a temp file and renames it over the path it is given, so a
 # failed run normally leaves the file as it was. --follow-symlinks resolves the
 # symlink first.
-if ! sed -i --follow-symlinks "${sed_args[@]}" "$FILE"; then
+if ! sed_err=$(sed -i --follow-symlinks "${sed_args[@]}" "$FILE" 2>&1); then
     if cmp -s "$FILE" "$backup"; then
-        fail "sed returned an error while patching $FILE." \
-             "$FILE is unchanged, so there is nothing to restore. Review the sed error above."
+        fail "sed could not patch $FILE: ${sed_err:-no error text}" \
+             "$FILE is unchanged, so there is nothing to restore. Check that it is not immutable (lsattr) and that its filesystem is writable."
     fi
-    fail "sed returned an error while patching $FILE." \
+    fail "sed could not patch $FILE: ${sed_err:-no error text}" \
          "Restore $backup and review manually."
 fi
 restore_hint=("$FILE was already rewritten. Restore $backup if it is not correct.")
