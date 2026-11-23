@@ -78,6 +78,15 @@ term_hides() {
     [ "$(active_pane pane_dead)" = "0" ]
 }
 
+@test "dead pane: the pane itself says how to reconnect" {
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 255"
+    wait_until 5 active_pane_is pane_dead 1
+    pane_says_reconnect() {
+        tmux -L "$SOCKET" capture-pane -p -t "=$session_name:.0" | grep -q "^exit 255 .* Ctrl+b r reconnects"
+    }
+    wait_until 5 pane_says_reconnect
+}
+
 @test "pane-died: the message names the window" {
     attach_client_in_terminal
     tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 3"
