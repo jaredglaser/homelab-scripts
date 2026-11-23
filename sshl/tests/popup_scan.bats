@@ -279,3 +279,12 @@ row_of() {
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tpinned' ]
     [ "$(tmux -L "$SOCKET" list-windows -t "=$session_name" -F '#{window_name}')" = "pinned" ]
 }
+
+@test "popup_scan: a missing ssh is reported before the scan" {
+    local pane
+    pane=$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' -s probe \
+        "env SSHL_DATA_DIR_OVERRIDE='$SSHL_DATA_DIR_OVERRIDE' SSHL_SOCKET_OVERRIDE='$SOCKET' PATH='$(path_without ssh)' bash '$SSHL_SRC/popup-scan.sh'; echo popup-exit=\$?; exec sleep 60")
+    wait_for_popup_exit "$pane" 1
+    tmux -L "$SOCKET" capture-pane -p -t "$pane" | grep -q "Error: 'ssh' is required but not installed"
+    ! tmux -L "$SOCKET" capture-pane -p -t "$pane" | grep -q "Scanning"
+}
