@@ -322,3 +322,14 @@ esac'
     [[ "$output" == *"Warning: line 7 of $SSHL_DATA_DIR_OVERRIDE/config: per-host keys take the host's IP, as in host.192.168.1.10.user, ignoring host.web01.user."* ]]
     [[ "$output" == *"0 overrides"* ]]
 }
+
+@test "config: quotes around a whole value are dropped" {
+    cat >> "$SSHL_DATA_DIR_OVERRIDE/config" << 'EOF2'
+subnet="10.0.0.0/24"
+terminal='konsole --profile x'
+host.192.0.2.5.right_cmd="ssh -t {user}@{ip} "htop -d 10""
+EOF2
+    load_config 'printf "%s|" "$subnet" "${terminal_cmd[@]}" "${host_right_cmd[192.0.2.5]}"'
+    [ "$status" -eq 0 ]
+    [ "$output" = '10.0.0.0/24|konsole|--profile|x|ssh -t {user}@{ip} "htop -d 10"|' ]
+}
