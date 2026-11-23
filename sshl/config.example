@@ -16,6 +16,8 @@ session_name=homelab
 # in place of -e. For a terminal that needs another option, end the value
 # with it (-e, -x or --) and sshl adds nothing.
 # Arguments are allowed, e.g. terminal=konsole --profile homelab
+# xterm's default font lacks the border and status glyphs, so give it one:
+# terminal=xterm -fa Monospace -fs 11
 terminal=konsole
 
 # Default SSH username (used when no per-host override)
