@@ -3,12 +3,14 @@
 # Invoked via:  host-info.sh [-f] <user> <ip>
 # Output: one short line, e.g. "up 3d14h · updates 7 · 12m"
 #
-# Fetches run async: the script returns immediately with either cached
-# data (possibly stale) or a loading placeholder, while SSH fires in a
-# backgrounded subshell. A marker file prevents duplicate concurrent
-# fetches and also drives the in-flight spinner animation. Cached
-# results live in ${TMPDIR:-/tmp}/tmux-homelab-info/<ip> with a 24h TTL.
-# -f bypasses the TTL and triggers an immediate refetch.
+# The script answers at once from a cache and refreshes it in a background
+# SSH call, which also runs apt-get update on the host. Entries are keyed on
+# user and ip and live in ${XDG_RUNTIME_DIR:-~/.cache}/sshl-host-info with a
+# 24h TTL (5m when the last fetch failed). The background job holds a flock
+# for its whole life, so the status bar, the launcher's warm-up and a forced
+# refresh never run two fetches for the same entry. While it runs the bar
+# shows a spinner that advances one frame per status poll. -f bypasses the
+# TTL and sets status-interval to 1 until the fetch it started ends.
 set -euo pipefail
 
 force=false
@@ -23,6 +25,28 @@ ip="${2:-}"
 if [[ -z "$ip" || -z "$user" ]]; then
     echo ""
     exit 0
+fi
+
+# Both end up in a file name and in ssh's destination argument, where a
+# leading hyphen would be read as an option.
+if [[ ! "$user" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]*$ || ! "$ip" =~ ^[A-Za-z0-9][A-Za-z0-9.:_-]*$ ]]; then
+    echo "host-info: invalid user or host"
+    exit 0
+fi
+
+if ! command -v flock >/dev/null 2>&1; then
+    echo "host-info: install flock (util-linux)"
+    exit 0
+fi
+
+# #() and run-shell jobs carry $TMUX for the server that runs them, and a
+# bare tmux command follows it. Outside tmux, fall back to the sshl socket.
+if [[ -n "${SSHL_SOCKET_OVERRIDE:-}" ]]; then
+    tmux_cmd=(tmux -L "$SSHL_SOCKET_OVERRIDE")
+elif [[ -n "${TMUX:-}" ]]; then
+    tmux_cmd=(tmux)
+else
+    tmux_cmd=(tmux -L homelab)
 fi
 
 format_age() {
@@ -47,13 +71,32 @@ format_uptime() {
     fi
 }
 
-cache_dir="${TMPDIR:-/tmp}/tmux-homelab-info"
-mkdir -p "$cache_dir"
-cache="$cache_dir/$ip"
-marker="$cache.refreshing"
+# Remote output and the cache are untrusted: tmux expands #[...] and #{...}
+# in #() output. Only digits (at most 12, so arithmetic cannot overflow) or
+# "?" pass. 10# keeps a leading zero from being read as octal.
+valid_field() {
+    [[ "$1" == "?" || "$1" =~ ^[0-9]{1,12}$ ]]
+}
+
+normalize_field() {
+    if [[ "$1" == "?" ]]; then printf '?'; else printf '%d' "$((10#$1))"; fi
+}
+
+cache_dir="${XDG_RUNTIME_DIR:-${HOME:?HOME not set}/.cache}/sshl-host-info"
+(umask 077 && mkdir -p "$cache_dir")
+if [[ ! -O "$cache_dir" || -L "$cache_dir" ]]; then
+    echo "host-info: $cache_dir is not owned by you"
+    exit 0
+fi
+cache="$cache_dir/$user@$ip"
+lockfile="$cache.lock"
+marker="$cache.fetching"
 # 24 hours. Once a day is plenty for update-count drift. The refresh
 # button (-f) bypasses this whenever you want a right-now check.
 ttl=86400
+# A failed fetch retries after 5m instead of pinning the host as unknown
+# for the full 24h, without hammering a host that's genuinely down.
+unknown_ttl=300
 
 spinner_frame() {
     local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
@@ -91,98 +134,115 @@ else
     n="?"
 fi
 
-printf '%s\t%s\n' "$up_sec" "$n"
+# Tagged so the caller can find the data among banners and rc-file output.
+printf 'SSHL\t%s\t%s\n' "$up_sec" "$n"
 REMOTE
 )
 
-# Fetch remote data in the background. The marker both serializes
-# concurrent fetch attempts (one per IP) AND signals the spinner path.
-async_fetch() {
-    if [[ -f "$marker" ]]; then
-        local marker_age=$(( $(date +%s) - $(stat -c %Y "$marker" 2>/dev/null || echo 0) ))
-        (( marker_age <= 30 )) && return
-        rm -f "$marker"
-    fi
-    ( set -C; > "$marker" ) 2>/dev/null || return
-    trap 'rm -f "$marker"; tmux -L homelab set -g status-interval 5 2>/dev/null || true' EXIT
-    (
-        local o
-        o=$(ssh -o BatchMode=yes \
-                -o ConnectTimeout=2 \
-                -o StrictHostKeyChecking=accept-new \
-                -o LogLevel=ERROR \
-                "$user@$ip" "$remote" 2>"${cache}.err") || o=$'?\t?'
-        local tmp="${cache}.tmp.$$"
-        printf '%s\n' "$o" > "$tmp" && mv "$tmp" "$cache" || rm -f "$tmp"
-    ) &
-    disown 2>/dev/null || true
+# Prints "<uptime>\t<updates>" from the last tagged line of the SSH output,
+# or "?\t?" when there is none or either field fails validation.
+parse_remote() {
+    local line tag up n rest entry=$'?\t?'
+    while IFS= read -r line; do
+        line="${line%$'\r'}"
+        IFS=$'\t' read -r tag up n rest <<<"$line" || true
+        [[ "$tag" == "SSHL" && -z "$rest" ]] || continue
+        if valid_field "$up" && valid_field "$n"; then
+            entry="$(normalize_field "$up")"$'\t'"$(normalize_field "$n")"
+        else
+            entry=$'?\t?'
+        fi
+    done
+    printf '%s\n' "$entry"
 }
 
-if $force; then
-    rm -f "$cache"
-    # Bump status-interval so the spinner animates at 1Hz instead of
-    # ticking once every 5s like the normal cadence.
-    tmux -L homelab set -g status-interval 1 2>/dev/null || true
-fi
+fetch() {
+    local out tmp
+    # 9>&- keeps an ssh ControlPersist master from holding the lock.
+    out=$(ssh -o BatchMode=yes \
+              -o ConnectTimeout=2 \
+              -o StrictHostKeyChecking=accept-new \
+              -o LogLevel=ERROR \
+              "$user@$ip" "$remote" 2>/dev/null 9>&-) || out=""
+    tmp=$(mktemp "$cache_dir/.tmp.XXXXXX")
+    if ! { parse_remote <<<"$out" > "$tmp" && mv "$tmp" "$cache"; }; then
+        rm -f "$tmp"
+    fi
+}
+
+# The whole subshell inherits fd 9, so the lock lives exactly as long as
+# the fetch. Its output goes to /dev/null so it does not hold tmux's #()
+# pipe open: tmux does not rerun a job whose pipe is still open.
+start_fetch() {
+    : > "$marker"
+    (
+        trap 'rm -f "$marker"; if $force; then "${tmux_cmd[@]}" set -g status-interval 5 9>&- 2>/dev/null || true; fi' EXIT
+        fetch
+    ) </dev/null >/dev/null 2>&1 &
+}
+
+read_entry() {
+    entry_up="?"
+    entry_updates="?"
+    entry_ok=false
+    [[ -f "$cache" ]] || return 0
+    local up n
+    IFS=$'\t' read -r up n < "$cache" 2>/dev/null || true
+    if valid_field "${up:-}" && valid_field "${n:-}"; then
+        entry_up="$(normalize_field "$up")"
+        entry_updates="$(normalize_field "$n")"
+        entry_ok=true
+    fi
+}
+
+now=$(date +%s)
+read_entry
+mtime=0
+[[ -f "$cache" ]] && mtime=$(stat -c %Y "$cache" 2>/dev/null || echo 0)
 
 need_fetch=true
-if [[ -f "$cache" ]]; then
-    mtime=$(stat -c %Y "$cache" 2>/dev/null || echo 0)
-    # Use a shorter effective TTL when uptime is unknown (up_sec == "?").
-    # Without this, a transient SSH blip pins the host as unknown for the
-    # full 24h. 5m recovers quickly from a network glitch but avoids
-    # hammering a host that's genuinely down.
-    cached_up=""
-    IFS=$'\t' read -r cached_up _ < "$cache" 2>/dev/null || true
-    if [[ "$cached_up" == "?" ]]; then
-        effective_ttl=300
-    else
-        effective_ttl=$ttl
-    fi
-    if (( $(date +%s) - mtime < effective_ttl )); then
-        need_fetch=false
-    fi
+if ! $force && $entry_ok; then
+    effective_ttl=$ttl
+    [[ "$entry_up" == "?" ]] && effective_ttl=$unknown_ttl
+    (( now - mtime < effective_ttl )) && need_fetch=false
 fi
 
-# Every real fetch refreshes the remote's package metadata. Otherwise
-# `apt list --upgradable` reports stale/empty counts on a fresh host,
-# and the user sees "0 updates" until they manually click refresh. The
-# TTL above (24 h) bounds how often we pay this cost.
-
+exec 9>>"$lockfile"
+fetching=false
 if $need_fetch; then
-    async_fetch
+    if flock -n 9; then
+        if $force; then
+            # 1 Hz polls so the spinner advances once a second while the
+            # forced fetch runs. The fetch's EXIT trap restores 5, so this
+            # must come first or a fast fetch leaves the bar at 1 Hz.
+            "${tmux_cmd[@]}" set -g status-interval 1 9>&- 2>/dev/null || true
+        fi
+        start_fetch
+    fi
+    fetching=true
+elif [[ -e "$marker" ]]; then
+    # A marker with a free lock was left by a fetch that was killed.
+    if flock -n 9; then rm -f "$marker"; else fetching=true; fi
 fi
+exec 9>&-
 
-# If we've never fetched this host, the cache file doesn't exist yet.
-# Show a loading indicator rather than blocking tmux or outputting
-# empty. The background fetch will populate the cache shortly.
 if [[ ! -f "$cache" ]]; then
     printf '#[fg=colour208]%s#[fg=colour252] loading…\n' "$(spinner_frame)"
     exit 0
 fi
 
 # Uptime and age both derive from cache mtime so they tick every poll.
-IFS=$'\t' read -r up_at_fetch updates < "$cache" || { up_at_fetch='?'; updates='?'; }
-mtime=$(stat -c %Y "$cache" 2>/dev/null || date +%s)
-age=$(( $(date +%s) - mtime ))
+age=$(( now - mtime ))
+(( age < 0 )) && age=0
 
-# Guard against a non-numeric up_at_fetch value (corrupt or manually-written cache).
-if [[ "$up_at_fetch" != "?" && ! "$up_at_fetch" =~ ^[0-9]+$ ]]; then
-    rm -f "$cache"
-    up_at_fetch="?"
-    updates="?"
-fi
-
-if [[ "$up_at_fetch" == "?" ]]; then
+if [[ "$entry_up" == "?" ]]; then
     up_display="?"
 else
-    up_display=$(format_uptime $((up_at_fetch + age)))
+    up_display=$(format_uptime $((entry_up + age)))
 fi
 
-# Any fetch in flight (refresh click OR natural async fetch) replaces
-# the updates count with an animated spinner frame. The frame index is
-# driven by wall-clock seconds so consecutive polls pick up new frames.
-if [[ -f "$marker" ]] && ! $force; then
+updates="$entry_updates"
+if $fetching; then
     updates="#[fg=colour208]$(spinner_frame)#[fg=colour252]"
 fi
 
