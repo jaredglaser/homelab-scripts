@@ -56,6 +56,9 @@ exec "$REAL_TMUX" -L "$SSHL_SOCKET_OVERRIDE-term" -f /dev/null new-session -d -s
     [ "$status" -eq 0 ]
     [[ "$output" == Usage:* ]]
     [[ "$output" == *"--rebuild"* ]]
+    [[ "$output" == *"prefix is Ctrl+b"* ]]
+    [[ "$output" == *"prefix r"* ]]
+    [[ "$output" == *"Config: $SSHL_DATA_DIR_OVERRIDE/config"* ]]
 }
 
 @test "sshl: --rebuild without a cache fails" {

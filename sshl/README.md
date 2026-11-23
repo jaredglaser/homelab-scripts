@@ -39,7 +39,8 @@ cd sshl
 # window of any host whose shell and htop both exited.
 ./sshl
 
-# Emergency: nuke the tmux server and rebuild from the cache
+# Emergency: close every sshl terminal, rebuild the session from the
+# cache and open a fresh terminal on it
 ./sshl --rebuild
 ```
 
