@@ -6,7 +6,7 @@ The script only ever rewrites two exact lines, `my $cmd = ['zfs', 'send', '-RpvU
 
 After patching, and also when it finds the file already patched, it checks every `zfs send` call site in the file and stops with a `WARNING` if any of them sends without `-L`. A call site is `'zfs', 'send'` written as a Perl list (single or double quotes, any spacing), or a quoted string that starts with `zfs send` followed either by the closing quote or by whitespace and a word starting with `-`, `$` or `@` (so `"zfs send -Rpv $snap"` and `"zfs send"` count, while message text such as `"zfs send failed"` or `"zfs send/receive failed"` does not). Lines whose first non-blank character is `#` are skipped, so a commented-out send line is ignored. The site counts as having `-L` when a flag word after it on the same line (a word such as `-RpvUL`), up to the next call site, contains `L`, or when `--large-block` follows it. A site with no flags on its own line, such as one whose flags continue on the next line, counts as missing `-L`. Sites the check flags are reported, never rewritten.
 
-This rule has been checked against three upstream copies of `ZFSPoolPlugin.pm` from `pve-storage.git`: `HEAD` as of 2026-11-23 (`libpve-storage-perl` 9.1.22), commit `c705a2c03f2c` (which added `-U`), and commit `e17a33794c34` (the last change to the file before it). Each has one send site, the script patched it on the first run, reported `OK` on the second, and flagged nothing. Releases after 9.1.22 have not been checked. If the warning appears on a file you have read and found correct (every `zfs send` it runs carries `-L`), the rule has matched something it should not: replication is not affected by that line, but the hook will keep exiting 1 and logging to `daemon.err` on every apt run, so open an issue with the reported line so the rule can be narrowed.
+This rule has been checked against three upstream copies of `ZFSPoolPlugin.pm` from `pve-storage.git`: `HEAD` as of 2026-11-23 (`libpve-storage-perl` 9.1.23), commit `c705a2c03f2c` (which added `-U`), and commit `e17a33794c34` (the last change to the file before it). Each has one send site, the script patched it on the first run, reported `OK` on the second, and flagged nothing. Releases after 9.1.23 have not been checked. If the warning appears on a file you have read and found correct (every `zfs send` it runs carries `-L`), the rule has matched something it should not: replication is not affected by that line, but the hook will keep exiting 1 and logging to `daemon.err` on every apt run, so open an issue with the reported line so the rule can be narrowed.
 
 The apt hook discards the exit code by design (see Install), so the script writes to syslog under the tag `pve-zfs-L-patch`: every failure at `daemon.err`, and every re-patch (`APPLIED`) at `daemon.notice`. A run that finds the file already patched, or finds the package absent, logs nothing. That is a record, not an alarm: nothing alerts on it, but it dates each re-patch and each failure, which re-running the script cannot do. To see when the patch was last applied or when it stopped applying:
 
@@ -60,9 +60,9 @@ Run these on the Proxmox node, as root.
    EOF
    ```
 
-   The `|| true` guard is intentional: without it, a script that exits 1 would abort the surrounding `apt` run. It does mean apt reports success even when the patch failed, which is why failures also go to syslog. Do not treat apt's exit code as evidence the patch applied.
+   The `|| true` guard is intentional. The hook runs after dpkg has finished, so without it a script that exits 1 would not stop any package from being installed: apt would print `E: Problem executing scripts DPkg::Post-Invoke` and exit 100 on every run while the warning lasts, and anything that runs apt unattended would treat each of those upgrades as failed. With the guard apt reports success even when the patch failed, which is why failures also go to syslog. Do not treat apt's exit code as evidence the patch applied.
 
-   `DPkg::Post-Invoke` is an apt setting. Running `dpkg` directly (`dpkg -i libpve-storage-perl_*.deb`, `dpkg --configure -a`) can replace the file without running the hook, so run the script by hand after doing that.
+   `DPkg::Post-Invoke` is an apt setting. Running `dpkg` directly (`dpkg -i libpve-storage-perl_*.deb`, `dpkg --configure -a`) can replace the file without running the hook, so run the script by hand after doing that, then reload the daemons as in step 4. The next apt run that invokes dpkg, for any package, also runs the hook and re-patches.
 
 3. Apply the patch immediately to confirm it works against the current state of the file:
 
@@ -92,11 +92,13 @@ Run these on the Proxmox node, as root.
 
 ## Verify the hook re-applies after an update
 
-Package updates revert the file to upstream. To confirm the apt hook will catch this without waiting for a real Proxmox update, reinstall the package that owns the file:
+Package updates revert the file to upstream. To confirm the apt hook will catch this without waiting for a real Proxmox update, reinstall the installed version of the package that owns the file:
 
 ```bash
-apt-get install --reinstall libpve-storage-perl
+apt-get install --reinstall "libpve-storage-perl=$(dpkg-query -W -f='${Version}' libpve-storage-perl)"
 ```
+
+Name the version: a plain `apt-get install --reinstall libpve-storage-perl` upgrades the package instead when the repository has a newer one, outside the full `apt dist-upgrade` that Proxmox expects. If apt answers that the version is not found, the repository no longer carries it; wait for the next real update instead.
 
 The reinstall unpacks the upstream copy of `ZFSPoolPlugin.pm` (the same revert a real upgrade would do), and the `DPkg::Post-Invoke` hook then fires and re-patches it. A successful run ends with the `APPLIED` line, after the trigger processing:
 
@@ -129,6 +131,14 @@ You should see `-RpvUL` on 9.1.3+ or `-RpvL` on older releases. Upstream added `
 > [!NOTE]
 > `apt update` only refreshes package indexes and does not invoke dpkg, so it does not trigger `DPkg::Post-Invoke`. Use a dpkg-invoking apt operation (`apt-get install`, `apt-get upgrade`, `apt-get install --reinstall ...`) when testing.
 
+## When the hook warns or fails
+
+Every `WARNING` and `FAILED` line is also in `journalctl -t pve-zfs-L-patch -p err`, first line only. After fixing the cause, run the script by hand and reload the daemons (Install steps 3 and 4): the hook does not run again until the next apt run that invokes dpkg.
+
+- `FAILED`: the first line names the cause, including the error from `sed`, `cp`, `mkdir` or `dpkg-query` where one of them failed. The file is unchanged unless a later line names a backup to restore.
+- `WARNING - ... is missing` or `WARNING - ... does not contain expected pattern`: upstream moved or rewrote the send call, and this script does not know the new shape. Replication of datasets with `recordsize` above 128K now sends without `-L`. Find the call with `grep -rn "'zfs', 'send'" /usr/share/perl5/PVE/`, and check this repository for an updated script before editing the file by hand. A hand edit is undone by the next update of the package, and the warning repeats on every apt run until the script knows the new shape.
+- `WARNING - ... still has a zfs send call without -L`: the line it lists sends without `-L`. When this follows a rewrite, the known call was patched and the listed one was not. See the call-site rule at the top of this README for what counts and what to do if the line is a false match.
+
 ## Recovery
 
 To restore the upstream copy of `ZFSPoolPlugin.pm` (no `-L` flag), first disable the apt hook so it cannot re-patch on the next apt-driven dpkg run:
@@ -144,10 +154,10 @@ Then restore the file. Two options:
 - **Reinstall `libpve-storage-perl`** to get the current upstream `ZFSPoolPlugin.pm`:
 
   ```bash
-  apt-get install --reinstall libpve-storage-perl
+  apt-get install --reinstall "libpve-storage-perl=$(dpkg-query -W -f='${Version}' libpve-storage-perl)"
   ```
 
-  Simplest for a clean rollback, and includes any package-level changes that have shipped since the patch was first applied.
+  Simplest for a clean rollback. Naming the installed version keeps apt from upgrading the package on its own when the repository has a newer one. To move to the newer upstream copy, run the usual `apt dist-upgrade` instead.
 
 - **Restore a specific timestamped backup** from `/var/backups/pve-zfs-L-patch/` if you need the exact pre-patch byte image from a particular run (for example, to bisect a regression introduced by a later package update). Backups are named `<timestamp>.<pid>`, and each one was compared byte for byte with the file it was copied from before the script patched anything. A run whose file matched the newest backup did not write a new one, so one backup can cover several runs:
 
@@ -155,6 +165,36 @@ Then restore the file. Two options:
   cp /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp>.<pid> \
      /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm
   ```
+
+  The names do not say which package version a backup came from. To find the backups that match the installed version, compare checksums with dpkg's record:
+
+  ```bash
+  grep ZFSPoolPlugin.pm /var/lib/dpkg/info/libpve-storage-perl.md5sums
+  md5sum /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.*
+  ```
+
+  Restoring a backup from another version leaves a file that does not match the installed package.
+
+Either way, reload the daemons afterwards, because they still hold the patched code:
+
+```bash
+systemctl reload-or-try-restart pvedaemon.service pveproxy.service pvescheduler.service
+```
+
+`dpkg --verify libpve-storage-perl` prints nothing once the file matches the package again. While the patch is in place it lists `ZFSPoolPlugin.pm` with a `5` in the checksum column, which is expected.
+
+## Uninstall
+
+Disable the hook first, so no later apt run starts the script, then remove the script:
+
+```bash
+rm /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch
+rm /usr/local/sbin/pve-zfs-large-block-patch.sh
+```
+
+This leaves `ZFSPoolPlugin.pm` patched until the next update of `libpve-storage-perl` replaces it. To go back to upstream right away, follow Recovery. The backups in `/var/backups/pve-zfs-L-patch/` are no longer needed once the file matches the package; remove them with `rm -r /var/backups/pve-zfs-L-patch`. The script never deletes a backup, so they accumulate: about 30 KB each time it patches a copy that differs from the newest backup.
+
+If `libpve-storage-perl` itself is removed, every later apt run prints a `NOT INSTALLED` notice that names these same two files. It exits 0 and logs nothing.
 
 ## Tests
 
@@ -169,6 +209,6 @@ Run from the repo root. The suite passes as root and as an unprivileged user. It
 | `PVE_ZFS_PATCH_FILE_OVERRIDE` | `/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm` |
 | `PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE` | `/var/backups/pve-zfs-L-patch` |
 
-The fixtures under `tests/fixtures/` are verbatim excerpts of upstream `src/PVE/Storage/ZFSPoolPlugin.pm` from `pve-storage.git`, so the patch is exercised against real surrounding code. `u.pm` is lines 941-968 of `HEAD` as of 2026-11-23 (`libpve-storage-perl` 9.1.22). `plain.pm` is lines 776-803 of commit `e17a33794c34`, the last version of the file before `-U` was added. The `-patched.pm` files are the same excerpts with `L` added to the send flags, the expected results. Re-cut them from upstream when the send flags change.
+The fixtures under `tests/fixtures/` are verbatim excerpts of upstream `src/PVE/Storage/ZFSPoolPlugin.pm` from `pve-storage.git`, so the patch is exercised against real surrounding code. `u.pm` is lines 941-968 of `HEAD` as of 2026-11-23 (`libpve-storage-perl` 9.1.23). `plain.pm` is lines 776-803 of commit `e17a33794c34`, the last version of the file before `-U` was added. The `-patched.pm` files are the same excerpts with `L` added to the send flags, the expected results. Re-cut them from upstream when the send flags change.
 
 `tests/bin/` is on `PATH` for every test and holds stubs for `dpkg-query` and `logger`. Both record their full argument lists, so the tests assert the package name, the query format, and the syslog priority and tag. Root ignores file modes, so failures are forced with stubs in `tests/stubs/` instead of `chmod`: a `cp` that writes a partial copy, a `sed` that fails or does nothing, a `grep` that reports a read error, and a `mktemp` that fails as it does on a full `/tmp`. A test links one in with `with_stub` for that test only. A backup directory whose parent is a regular file covers the `mkdir` failure.
