@@ -24,6 +24,13 @@ trim() {
     printf '%s' "$v"
 }
 
+# Names from SSH, reverse DNS and the cache are untrusted: they become
+# tmux window names (where #[...] is expanded) and fill {hostname} in the
+# pane command templates. A leading hyphen would read as an option there.
+valid_hostname() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+}
+
 require() {
     if ! command -v "$1" &>/dev/null; then
         echo "Error: '$1' is required but not installed" >&2
@@ -111,7 +118,7 @@ read_cache() {
         c_name="$(trim "$c_name")"
         [[ -z "$c_ip" ]] && continue
         ips+=("$c_ip")
-        if [[ -n "$c_name" ]]; then cached_name["$c_ip"]="$c_name"; fi
+        if valid_hostname "$c_name"; then cached_name["$c_ip"]="$c_name"; fi
     done < "$CACHE_FILE"
 }
 
@@ -126,7 +133,7 @@ read_ignored() {
         [[ -z "$c_ip" ]] && continue
         ignored_ips+=("$c_ip")
         # shellcheck disable=SC2034  # write_ignored reads it through a nameref
-        if [[ -n "$c_name" ]]; then ignored_name["$c_ip"]="$c_name"; fi
+        if valid_hostname "$c_name"; then ignored_name["$c_ip"]="$c_name"; fi
     done < "$IGNORED_FILE"
 }
 
@@ -179,7 +186,8 @@ resolve_remote_hostname() {
                -o LogLevel=ERROR \
                "$user@$ip" hostname -s 2>/dev/null) || return 1
     name="${name//[[:space:]]/}"
-    [[ -n "$name" ]] && printf '%s' "$name"
+    valid_hostname "$name" || return 1
+    printf '%s' "$name"
 }
 
 # Run nmap, populate discovered_ips/discovered_name. No file writes,
@@ -210,8 +218,13 @@ scan_subnet() {
             done
         }
 
-    local scanned
-    mapfile -t scanned < <(awk '/22\/open/{print $2}' "$nmap_tmp" | sort -V)
+    local -a scanned=()
+    local -A skip=()
+    local ip
+    for ip in "${ignored_ips[@]}"; do skip["$ip"]=1; done
+    while IFS= read -r ip; do
+        [[ -n "${skip[$ip]:-}" ]] || scanned+=("$ip")
+    done < <(awk '/22\/open/{print $2}' "$nmap_tmp" | sort -V)
     rm -f "$nmap_tmp"
 
     if [[ ${#scanned[@]} -eq 0 ]]; then
@@ -220,7 +233,7 @@ scan_subnet() {
     fi
 
     echo "Resolving hostnames for ${#scanned[@]} host(s)..." >&2
-    local tmp ip name
+    local tmp name
     tmp="$(mktemp)"
     for ip in "${scanned[@]}"; do
         (
@@ -231,6 +244,7 @@ scan_subnet() {
             if [[ -z "$name" ]]; then
                 name="$(getent hosts "$ip" 2>/dev/null | awk '{print $2}' | head -n1 || true)"
                 name="${name%%.*}"
+                valid_hostname "$name" || name=""
             fi
             printf '%s\t%s\n' "$ip" "$name"
         ) >>"$tmp" &
@@ -258,9 +272,9 @@ resolve_hostname() {
 
 substitute() {
     local tmpl="$1" ip="$2" user="$3" hostname="$4"
-    tmpl="${tmpl//\{ip\}/$ip}"
-    tmpl="${tmpl//\{user\}/$user}"
-    tmpl="${tmpl//\{hostname\}/$hostname}"
+    tmpl="${tmpl//\{ip\}/"$ip"}"
+    tmpl="${tmpl//\{user\}/"$user"}"
+    tmpl="${tmpl//\{hostname\}/"$hostname"}"
     printf '%s' "$tmpl"
 }
 

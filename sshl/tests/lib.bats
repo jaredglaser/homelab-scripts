@@ -166,3 +166,51 @@ load test_helper
     read_cache
     [ "${#ips[@]}" = "2" ]
 }
+
+@test "substitute: an & in a value is kept literally" {
+    result=$(substitute "ssh {user}@{ip} # {hostname}" "10.0.0.1" "a&b" "x&y")
+    [ "$result" = "ssh a&b@10.0.0.1 # x&y" ]
+}
+
+@test "scan_subnet: a name from ssh that is not a plain hostname falls back to the IP" {
+    # shellcheck disable=SC2016  # the payload is meant to stay literal
+    stub_cmd ssh 'case "$*" in
+    *192.0.2.1*) echo "pve;touch\${IFS}INJECTED;#" ;;
+    *) echo "#[bg=red]x" ;;
+esac'
+    stub_cmd getent 'exit 2'
+    scan_subnet
+    [ -z "${discovered_name[192.0.2.1]:-}" ]
+    [ -z "${discovered_name[192.0.2.2]:-}" ]
+    [ "$(resolve_hostname 192.0.2.1)" = "192.0.2.1" ]
+}
+
+@test "scan_subnet: a reverse DNS name that is not a plain hostname is dropped" {
+    stub_cmd ssh 'exit 255'
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd getent 'echo "$2 #[bg=red]evil.lan"'
+    scan_subnet
+    [ -z "${discovered_name[192.0.2.1]:-}" ]
+}
+
+@test "scan_subnet: ignored IPs are skipped before their names are resolved" {
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd ssh 'printf "%s\n" "$*" >> "$SSHL_DIR_OVERRIDE/ssh.log"; echo name'
+    ignored_ips=("192.0.2.1")
+    scan_subnet
+    [ "${discovered_ips[*]}" = "192.0.2.2" ]
+    run grep '192\.0\.2\.1' "$SSHL_DIR_OVERRIDE/ssh.log"
+    [ "$status" -ne 0 ]
+}
+
+@test "read_cache and read_ignored: a cached name that is not a plain hostname is dropped" {
+    printf '192.0.2.1\t#[bg=red]x\n192.0.2.2\tgood-name\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
+    printf '192.0.2.3\tbad;name\n' > "$SSHL_DIR_OVERRIDE/ignored.cache"
+    read_cache
+    read_ignored
+    [ "${#ips[@]}" = "2" ]
+    [ -z "${cached_name[192.0.2.1]:-}" ]
+    [ "${cached_name[192.0.2.2]}" = "good-name" ]
+    [ "${ignored_ips[0]}" = "192.0.2.3" ]
+    [ -z "${ignored_name[192.0.2.3]:-}" ]
+}
