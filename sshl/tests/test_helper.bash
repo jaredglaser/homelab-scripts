@@ -117,6 +117,7 @@ install_tmux_guard() {
     cat > "$STUB_BIN/tmux" << 'EOF'
 #!/usr/bin/env bash
 args=" $* "
+[[ "$args" == " -V " ]] && exec "$REAL_TMUX" -V
 if [[ "$args" == *" -L homelab "* ]]; then
     echo "refused: tmux $*" >> "$TMUX_GUARD_LOG"
     exit 1

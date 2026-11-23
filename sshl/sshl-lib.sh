@@ -57,8 +57,38 @@ fzf_version() {
     if [[ "$v" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then printf '%s' "$v"; fi
 }
 
+# True when version $2 is $1 or later.
+version_at_least() {
+    [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n1)" == "$1" ]]
+}
+
 fzf_new_enough() {
-    [[ -n "$1" && "$(printf '%s\n%s\n' "$SSHL_FZF_MIN" "$1" | sort -V | head -n1)" == "$SSHL_FZF_MIN" ]]
+    [[ -n "$1" ]] && version_at_least "$SSHL_FZF_MIN" "$1"
+}
+
+# homelab.tmux.conf uses display-popup and pane-border-lines, both new in
+# 3.2. On an older tmux the session opens with the config's errors over
+# the first pane and none of the popup keys do anything.
+SSHL_TMUX_MIN=3.2
+
+# A build from git reports "master" or "openbsd-7.6", which says nothing
+# about features, so a version without a number up front is let through.
+tmux_new_enough() {
+    local v="${1#next-}"
+    v="${v%%[!0-9.]*}"
+    [[ -z "$v" ]] || version_at_least "$SSHL_TMUX_MIN" "$v"
+}
+
+require_tmux() {
+    require tmux
+    local v
+    v="$(tmux -V 2>/dev/null || true)"
+    v="${v#tmux }"
+    if ! tmux_new_enough "$v"; then
+        echo "Error: tmux $SSHL_TMUX_MIN or newer is required, found $v." >&2
+        echo "Install a newer tmux from your distribution's backports or https://github.com/tmux/tmux/releases" >&2
+        exit 1
+    fi
 }
 
 require_fzf() {
@@ -190,7 +220,7 @@ case "${terminal_cmd[${#terminal_cmd[@]}-1]}" in
         esac ;;
 esac
 
-require tmux
+require_tmux
 
 # ips.cache mirrors the live tmux session. Each line is `<ip>\t<name>`
 # in display order (NOT IP-sorted). The popup flows mutate the cache

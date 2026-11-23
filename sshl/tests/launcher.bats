@@ -242,3 +242,14 @@ install_arg_logger() {
     [ "$status" -eq 0 ]
     [ "$(head -n3 "$SSHL_DATA_DIR_OVERRIDE/term.log" | tr '\n' ' ')" = "start -- tmux " ]
 }
+
+@test "sshl: a tmux older than the minimum is reported before anything runs" {
+    seed_cache
+    stub_cmd tmux "if [[ \"\$1\" == -V ]]; then echo 'tmux 3.0a'; exit 0; fi
+exec '$REAL_TMUX' \"\$@\""
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Error: tmux 3.2 or newer is required, found 3.0a."* ]]
+    run session_exists
+    [ "$status" -ne 0 ]
+}
