@@ -81,8 +81,10 @@ multi_select() {
     # fzf --multi accepts the highlighted row when nothing is ticked, so
     # Enter and double-click accept only while something is. fzf runs the
     # transform in $SHELL, and a login shell such as fish may not parse it.
+    # fzf's default marker is a thin bar, easy to miss next to a row.
     # shellcheck disable=SC2016  # FZF_SELECT_COUNT is expanded by fzf's shell
     SHELL="$BASH" fzf --multi --reverse --no-sort --height=100% \
+        --marker='+' \
         --header="$header" --header-first \
         --bind='space:toggle+down' \
         --bind='enter:transform:[ "$FZF_SELECT_COUNT" -gt 0 ] && echo accept || echo abort' \
