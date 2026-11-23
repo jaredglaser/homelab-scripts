@@ -52,9 +52,8 @@ popup_scan() {
 
     # Padded tag so columns align and awk still sees one token per
     # field (whitespace-separated).
-    # A host that moved to a new address shows up twice, as a CURRENT row
-    # at the old address and a NEW row at the new one, so say which of
-    # the two the scan no longer sees.
+    # A host that moved shows up twice, CURRENT at the old address and NEW
+    # at the new one, so say which one the scan no longer sees.
     local fzf_input="" name display_name tag
     for ip in "${entries[@]}"; do
         name="${host_name[$ip]:-${cached_name[$ip]:-${discovered_name[$ip]:-}}}"

@@ -28,11 +28,11 @@ The prefix is `Ctrl+b`. The session runs on its own tmux server, so your `~/.tmu
 
 | Key | Action |
 |-----|--------|
-| `prefix S` | Scan again. Tick a NEW host to add it, or a CURRENT host to remove it. Removed hosts are hidden from later scans. |
+| `prefix S` | Scan again. Tick a NEW host to add it, or a CURRENT host to remove it. Removed hosts are hidden from later scans. A host that did not answer is marked `(not found by this scan)`. |
 | `prefix I` | Show removed hosts. Tick one to let scans offer it again. |
-| `prefix O` | Reorder windows: `j`/`k` or arrows to move, space to pick up and drop, Enter to apply. |
+| `prefix O` | Reorder windows: `j`/`k` or arrows to move (Home, End, PgUp and PgDn jump), space to pick up and drop, Enter to apply. |
 | `prefix H` | Jump to a host by name. |
-| `prefix r` | Restart a pane whose connection dropped, and refresh the host info. |
+| `prefix r` | Reconnect the window's dropped panes and refresh the host info. |
 | Click a tab | Switch host. |
 | Click `↻` | Refresh the host info. |
 
@@ -40,7 +40,7 @@ If a popup hits an error, it stays open with the message. Press Esc to close it.
 
 ## Status bar
 
-The second row shows the current host's uptime, its pending package updates, and how long ago that was checked, for example `web01 up 6m · updates 4 · 2m`. A `?` means the host did not answer.
+The second row shows the current host's uptime, its pending package updates, and how long ago that was checked, for example `web01 up 6m · updates 4 · 2m`. When a host can't be read, the row says why in red: unreachable, host key changed, login refused, no answer or ssh failed.
 
 To get these, sshl logs in to each host about once a day and runs `apt-get update` there, as root or through `sudo -n`. Without passwordless sudo the count may be out of date.
 

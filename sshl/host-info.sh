@@ -97,10 +97,8 @@ ttl=86400
 # A failed fetch retries after 5m instead of pinning the host as unknown
 # for the full 24h, without hammering a host that's genuinely down.
 unknown_ttl=300
-# ConnectTimeout covers only the connection and the banner. A host that
-# freezes after login (paused VM, cable pulled, apt-get update stuck on a
-# mirror) would hold the fetch, its lock and the spinner forever, and a
-# forced fetch would keep the bar at 1 Hz for good.
+# ConnectTimeout covers only connecting. Without a cap, a host that freezes
+# after login holds the fetch, its lock and the spinner forever.
 fetch_timeout="${SSHL_FETCH_TIMEOUT_OVERRIDE:-120}"
 
 spinner_frame() {
