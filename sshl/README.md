@@ -8,7 +8,7 @@ Runs on your workstation, not on the homelab nodes themselves.
 
 | Tool | Minimum | Why |
 |------|---------|-----|
-| bash | 4.4 | namerefs (`local -n`) and empty arrays under `set -u` |
+| bash | 4.4 | namerefs (`local -n`) and empty arrays under `set -u`. sshl stops with a message on an older bash |
 | tmux | 3.2 | the popups need `display-popup -EE` and the pane borders `pane-border-lines`, both added in 3.2. sshl stops with a message on an older tmux. A click on the `↻` status-bar button needs 3.4 (user mouse ranges and `mouse_status_range`): on 3.2 and 3.3 the button is drawn but a click does nothing, and `<prefix> r` refreshes the same way |
 | fzf | 0.46.0 | the popups read `FZF_SELECT_COUNT`, which fzf exports from 0.46.0 on. An older fzf makes the popups fail with a message that names both versions |
 | nmap | | the subnet scan |

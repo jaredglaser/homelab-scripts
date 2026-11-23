@@ -3,6 +3,16 @@
 [[ -n "${_SSHL_LIB:-}" ]] && return 0
 _SSHL_LIB=1
 
+# Expanding an empty array under set -u needs bash 4.4. An older bash
+# gets as far as the first empty host list and dies on "unbound variable".
+bash_new_enough() {
+    (( $1 > 4 || ($1 == 4 && $2 >= 4) ))
+}
+if ! bash_new_enough "${BASH_VERSINFO[0]}" "${BASH_VERSINFO[1]}"; then
+    echo "Error: sshl needs bash 4.4 or newer, found $BASH_VERSION." >&2
+    exit 1
+fi
+
 # Scripts and the tmux conf live next to this file. The config and the
 # caches live in SSHL_DATA_DIR, which only the tests move.
 SSHL_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
