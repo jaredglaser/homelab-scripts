@@ -254,6 +254,18 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
     ssh_count_is 0
 }
 
+@test "host-info: a fetch from a host that stops answering ends at the time limit" {
+    start_test_server
+    export SSHL_FETCH_TIMEOUT_OVERRIDE=1
+    rm -f "$SSH_GATE"
+    "$HI" -f testuser "$IP" > /dev/null
+    status_interval_is 1
+    wait_until 4 fetch_done "testuser@$IP"
+    wait_until 2 status_interval_is 5
+    [ "$(cut -f1,2 "$CACHE_DIR/testuser@$IP")" = $'?\t?' ]
+}
+
+
 @test "host-info: the cache lives under XDG_RUNTIME_DIR with mode 700" {
     "$HI" testuser "$IP" > /dev/null
     wait_fetch_done "testuser@$IP"
