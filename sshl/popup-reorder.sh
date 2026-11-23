@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 # Hand-rolled keyboard TUI. State machine: nav (cursor moves) and grab
 # (cursor + held item move together). On apply, rewrite ips.cache in
@@ -17,13 +18,14 @@ popup_reorder() {
     local -a items=("${ips[@]}")
     local cursor=0
     local grabbed=0
+    local top=0
 
-    # ANSI helpers. tput hides/shows cursor and uses smcup/rmcup to
-    # save+restore the terminal state so the popup vanishes cleanly.
+    # tput smcup/rmcup save and restore the terminal so the list vanishes
+    # cleanly, and civis/cnorm hide and show the cursor.
     tput smcup 2>/dev/null || true
     tput civis 2>/dev/null || true
     # Restore terminal on any exit, including ctrl-c.
-    trap 'tput cnorm 2>/dev/null || true; tput rmcup 2>/dev/null || true' EXIT
+    trap 'rc=$?; _reorder_restore_term; popup_exit_hint "$rc"' EXIT
 
     local result=cancelled
     while true; do
@@ -86,23 +88,22 @@ popup_reorder() {
         esac
     done
 
-    tput cnorm 2>/dev/null || true
-    tput rmcup 2>/dev/null || true
+    _reorder_restore_term
     trap - EXIT
+    if [[ -n "${SSHL_POPUP:-}" ]]; then trap 'popup_exit_hint $?' EXIT; fi
 
     if [[ "$result" != "apply" ]]; then
         echo "Reorder cancelled." >&2
         return 0
     fi
 
-    local rc=0
-    apply_reorder "${items[@]}" || rc=$?
-    if (( rc == 0 )); then
-        sleep 1.2
-        return 0
-    fi
-    sleep 2.5
-    if (( rc == 1 )); then return 1; fi
+    apply_reorder "${items[@]}" || return 1
+    sleep 1.2
+}
+
+_reorder_restore_term() {
+    tput cnorm 2>/dev/null || true
+    tput rmcup 2>/dev/null || true
 }
 
 # Rewrites ips.cache in the given order, then swaps the live windows to
@@ -157,7 +158,6 @@ apply_reorder() {
         "${TMUX_CMD[@]}" move-window -r -t "=$session_name" 2>/dev/null || true
     fi
 
-    refresh_session_options
     if (( failed > 0 )); then
         echo "Reordered $moved window(s), $failed failed. Run 'sshl --rebuild' if the session looks wrong." >&2
         return 2
@@ -165,44 +165,59 @@ apply_reorder() {
     echo "Reordered $moved window(s)." >&2
 }
 
-# Reads `cursor` and `grabbed` from the caller's scope (popup_reorder
-# declares both as local). Items pass through as positional arguments
-# so the function doesn't also need to dynamically scope `items`.
+# Reads `cursor` and `grabbed` from the caller's scope and moves its `top`
+# (popup_reorder declares all three as local) so the list scrolls with the
+# cursor. Items pass through as positional arguments so the function
+# doesn't also need to dynamically scope `items`.
 _reorder_render() {
     local items=("$@")
-    local cols
+    local cols lines
     cols=$(tput cols 2>/dev/null || echo 80)
+    lines=$(tput lines 2>/dev/null || echo 24)
 
     tput clear 2>/dev/null || printf '\033[2J\033[H'
     tput cup 0 0 2>/dev/null || true
 
     local header_l1="↑/↓ or j/k move cursor • space grab/drop • enter apply • q/esc cancel"
-    local header_l2="grabbed: $([[ $grabbed -eq 1 ]] && echo 'YES, arrows now move the held item' || echo 'no')"
+    local header_l2="grabbed: no"
+    (( grabbed )) && header_l2="grabbed: YES, arrows now move the held item"
     printf '%s\n' "$header_l1"
     printf '%s\n' "$header_l2"
     printf '%s\n' "$(printf '─%.0s' $(seq 1 $((cols<60?cols:60))))"
+
+    # Three header lines and one footer line frame the rows.
+    local rows=$(( lines - 4 ))
+    (( rows < 1 )) && rows=1
+    (( cursor < top )) && top=$cursor
+    (( cursor >= top + rows )) && top=$(( cursor - rows + 1 ))
+    local end=$(( top + rows ))
+    (( end > ${#items[@]} )) && end=${#items[@]}
 
     local i ip name marker prefix style reset
     style=$'\033[7m'   # reverse video (highlighted row)
     reset=$'\033[0m'
     local grab_style=$'\033[33;1m'  # bold yellow (held row)
-    for ((i=0; i<${#items[@]}; i++)); do
+    for ((i=top; i<end; i++)); do
         ip="${items[i]}"
         name="${cached_name[$ip]:-$ip}"
         if (( i == cursor )); then
             if (( grabbed )); then
-                marker="${grab_style}>>${reset} "
+                marker=">>"
                 prefix="${grab_style}"
             else
-                marker="${style}> ${reset}"
+                marker="> "
                 prefix="${style}"
             fi
         else
             marker="  "
             prefix=""
         fi
-        printf '%b%2d  %-15s  %s%b\n' "$prefix" "$((i+1))" "$ip" "$name" "$reset"
+        printf '%b%s%2d  %-15s  %s%b\n' "$prefix" "$marker" "$((i+1))" "$ip" "$name" "$reset"
     done
+    # No newline after the footer, so the screen never scrolls the header away.
+    if (( top > 0 || end < ${#items[@]} )); then
+        printf 'rows %d-%d of %d' "$((top + 1))" "$end" "${#items[@]}"
+    fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then popup_reorder; fi
