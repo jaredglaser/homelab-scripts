@@ -178,7 +178,7 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
     "$HI" baduser "$IP" > /dev/null
     wait_fetch_done "baduser@$IP"
     run "$HI" baduser "$IP"
-    [ "$output" = "up ? · updates ? · < 1m" ]
+    [ "$output" = "#[fg=colour203]ssh failed#[fg=colour252] · < 1m" ]
 
     "$HI" root "$IP" > /dev/null
     wait_fetch_done "root@$IP"
@@ -186,7 +186,7 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
     [ "$output" = "up 1d1h · updates 3 · < 1m" ]
 
     run "$HI" baduser "$IP"
-    [ "$output" = "up ? · updates ? · < 1m" ]
+    [ "$output" = "#[fg=colour203]ssh failed#[fg=colour252] · < 1m" ]
     ssh_count_is 2
 }
 
@@ -265,7 +265,6 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
     [ "$(cut -f1,2 "$CACHE_DIR/testuser@$IP")" = $'?\t?' ]
 }
 
-
 @test "host-info: a killed forced fetch does not leave the bar at 1 Hz" {
     start_test_server
     tmux -L "$SOCKET" set -g status-interval 1
@@ -277,7 +276,6 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
     status_interval_is 5
 }
 
-
 @test "host-info: a killed plain fetch leaves the status interval alone" {
     start_test_server
     tmux -L "$SOCKET" set -g status-interval 1
@@ -288,6 +286,38 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
     status_interval_is 1
 }
 
+@test "host-info: a failed login says why instead of up ? and updates ?" {
+    local why expect n=20
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd ssh 'cat "$SSHL_DATA_DIR_OVERRIDE/ssh.err.${*: -2:1}" >&2; exit 255'
+    while IFS='|' read -r why expect; do
+        n=$((n + 1))
+        printf '%s\n' "$why" > "$SSHL_DATA_DIR_OVERRIDE/ssh.err.testuser@192.0.2.$n"
+        "$HI" testuser "192.0.2.$n" > /dev/null
+        wait_fetch_done "testuser@192.0.2.$n"
+        run "$HI" testuser "192.0.2.$n"
+        [ "$output" = "#[fg=colour203]$expect#[fg=colour252] · < 1m" ] || {
+            echo "for '$why' got: $output" >&2
+            return 1
+        }
+    done <<'CASES'
+Host key verification failed.|host key changed
+testuser@192.0.2.10: Permission denied (publickey,password).|login refused
+ssh: connect to host 192.0.2.10 port 22: No route to host|unreachable
+ssh: connect to host 192.0.2.10 port 22: Connection timed out|unreachable
+ssh: connect to host 192.0.2.10 port 22: Connection refused|unreachable
+Connection timed out during banner exchange|unreachable
+|no answer
+something else went wrong|ssh failed
+CASES
+}
+
+@test "host-info: a planted reason in the cache never reaches the output" {
+    mkdir -m 700 "$CACHE_DIR"
+    printf '?\t?\t#[bg=red]\n' > "$CACHE_DIR/testuser@$IP"
+    run "$HI" testuser "$IP"
+    [ "$output" = "up ? · updates ? · < 1m" ]
+}
 
 @test "host-info: the cache lives under XDG_RUNTIME_DIR with mode 700" {
     "$HI" testuser "$IP" > /dev/null

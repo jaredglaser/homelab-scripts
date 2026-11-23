@@ -161,8 +161,40 @@ parse_remote() {
     printf '%s\n' "$entry"
 }
 
+# Names why ssh gave no data, from its exit status and stderr, as one of
+# the words failure_text knows. Nothing when ssh itself succeeded.
+failure_reason() {
+    local rc="$1" err="$2"
+    case "$rc" in
+        0) return 0 ;;
+        124) printf 'timeout'; return 0 ;;
+    esac
+    case "$err" in
+        *"Host key verification failed"*|*"HOST IDENTIFICATION HAS CHANGED"*) printf 'hostkey' ;;
+        *"Permission denied"*|*"Too many authentication failures"*) printf 'auth' ;;
+        *"Connection timed out"*|*"No route to host"*|*"Connection refused"*|\
+        *"Network is unreachable"*|*"Could not resolve hostname"*) printf 'unreachable' ;;
+        # At LogLevel=ERROR ssh says nothing when its keepalives give up.
+        *"not responding"*) printf 'timeout' ;;
+        *[![:space:]]*) printf 'failed' ;;
+        *) if [[ "$rc" == 255 ]]; then printf 'timeout'; else printf 'failed'; fi ;;
+    esac
+}
+
+# The cache is untrusted, so only these words become status text.
+failure_text() {
+    case "$1" in
+        timeout)     printf 'no answer' ;;
+        hostkey)     printf 'host key changed' ;;
+        auth)        printf 'login refused' ;;
+        unreachable) printf 'unreachable' ;;
+        failed)      printf 'ssh failed' ;;
+    esac
+}
+
 fetch() {
-    local out tmp
+    local out tmp errf rc=0 reason line
+    errf=$(mktemp "$cache_dir/.err.XXXXXX")
     # 9>&- keeps an ssh ControlPersist master from holding the lock.
     # ServerAlive notices a host that stops answering within 15s, and
     # timeout ends a remote command that never finishes.
@@ -172,9 +204,16 @@ fetch() {
               -o ServerAliveCountMax=3 \
               -o StrictHostKeyChecking=accept-new \
               -o LogLevel=ERROR \
-              "$user@$ip" "$remote" 2>/dev/null 9>&-) || out=""
+              "$user@$ip" "$remote" 2>"$errf" 9>&-) || { rc=$?; out=""; }
+    reason="$(failure_reason "$rc" "$(head -c 4096 "$errf")")"
+    rm -f "$errf"
+    if [[ -n "$reason" ]]; then
+        line=$'?\t?\t'"$reason"
+    else
+        line="$(parse_remote <<<"$out")"
+    fi
     tmp=$(mktemp "$cache_dir/.tmp.XXXXXX")
-    if ! { parse_remote <<<"$out" > "$tmp" && mv "$tmp" "$cache"; }; then
+    if ! { printf '%s\n' "$line" > "$tmp" && mv "$tmp" "$cache"; }; then
         rm -f "$tmp"
     fi
 }
@@ -195,13 +234,15 @@ start_fetch() {
 read_entry() {
     entry_up="?"
     entry_updates="?"
+    entry_reason=""
     entry_ok=false
     [[ -f "$cache" ]] || return 0
-    local up n
-    IFS=$'\t' read -r up n < "$cache" 2>/dev/null || true
+    local up n reason
+    IFS=$'\t' read -r up n reason < "$cache" 2>/dev/null || true
     if valid_field "${up:-}" && valid_field "${n:-}"; then
         entry_up="$(normalize_field "$up")"
         entry_updates="$(normalize_field "$n")"
+        entry_reason="$(failure_text "${reason:-}")"
         entry_ok=true
     fi
 }
@@ -252,6 +293,13 @@ fi
 # Uptime and age both derive from cache mtime so they tick every poll.
 age=$(( now - mtime ))
 (( age < 0 )) && age=0
+
+if [[ -n "$entry_reason" ]]; then
+    spin=""
+    if $fetching; then spin=" #[fg=colour208]$(spinner_frame)"; fi
+    printf '#[fg=colour203]%s%s#[fg=colour252] · %s\n' "$entry_reason" "$spin" "$(format_age "$age")"
+    exit 0
+fi
 
 if [[ "$entry_up" == "?" ]]; then
     up_display="?"
