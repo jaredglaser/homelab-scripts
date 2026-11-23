@@ -17,7 +17,6 @@ B=/var/backups/pve-zfs-L-patch
 TAG=pve-zfs-L-patch
 REPO=/srv/e2e-repo
 LOGS=/root/e2e-logs
-RELOAD_LOG=/var/log/e2e-daemon-reload.log
 mkdir -p "$LOGS"
 
 fails=0
@@ -88,7 +87,6 @@ hook_verbatim
 mark
 run "$S"
 check "first run says APPLIED and exits 0" eval 'rc_is 0 && has "APPLIED - patched $F to add -L flag"'
-check "APPLIED gives the daemon reload command" has "systemctl reload-or-try-restart pvedaemon.service pveproxy.service pvescheduler.service"
 check "file now has -RpvUL" flags_are -RpvUL
 check "one backup, identical to the packaged file" eval '[ "$(backups)" -eq 1 ] && [ "$(md5sum < "$B"/ZFSPoolPlugin.pm.prepatch.* | cut -d" " -f1)" = "$(installed_md5)" ]'
 check "APPLIED is in the journal at notice" journal_has "patched $F to add -L flag" -p notice
@@ -99,13 +97,11 @@ check "OK is not logged" journal_empty
 check "README's grep shows -RpvUL" eval "grep -F send $F | grep -F \"'zfs'\" | grep -q RpvUL"
 
 section "Verify: reinstall of the installed version fires the hook"
-: > "$RELOAD_LOG"
 mark
 run apt_q install --reinstall "libpve-storage-perl=$(dpkg-query -W -f='${Version}' libpve-storage-perl)"
 check "apt says 1 reinstalled and exits 0" eval 'rc_is 0 && has "1 reinstalled"'
 check "hook reuses the backup and says APPLIED" eval 'has "reusing $B/" && has "APPLIED"'
 check "APPLIED comes after pve-manager's trigger" eval '[[ "$out" == *"Processing triggers for pve-manager"*"APPLIED"* ]]'
-check "pve-manager's trigger (the daemon reload) saw the unpatched file" grep -qF "'-RpvU'" "$RELOAD_LOG"
 check "still one backup" eval '[ "$(backups)" -eq 1 ]'
 check "journal has the re-patch" journal_has "patched $F" -p notice
 

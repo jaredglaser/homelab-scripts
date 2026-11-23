@@ -21,7 +21,7 @@ build() {
     mkdir -p "$root/etc"
     echo "# e2e stand-in conffile" > "$root/etc/e2e-libpve-storage-perl.conf"
     echo /etc/e2e-libpve-storage-perl.conf > "$root/DEBIAN/conffiles"
-    # Upstream debian/triggers: pve-manager reloads the API daemons on this.
+    # Upstream debian/triggers, which pve-manager declares interest in.
     echo "activate-noawait pve-api-updates" > "$root/DEBIAN/triggers"
     cat > "$root/DEBIAN/control" <<CTL
 Package: libpve-storage-perl
@@ -52,10 +52,8 @@ build 9.1.23+syn.moved "/usr/share/perl5/PVE/Storage/ZFSPoolPlugin/Base.pm" "$sr
 build 9.1.23+syn.shape "$f" "$syn/shape.pm" "synthetic: send flags changed to -RpvUw"
 build 9.1.23+syn.extra "$f" "$syn/extra.pm" "synthetic: a second send site without -L"
 
-# Stand-in pve-manager with upstream's trigger interest. Upstream's
-# postinst reloads pvedaemon and pvescheduler here, and both keep the Perl
-# modules they loaded at start. This one records the send flags on disk at
-# that moment, which is what the reloaded daemons would run with.
+# Stand-in pve-manager with upstream's trigger interest, so apt output
+# has "Processing triggers for pve-manager" where a real node has it.
 mgr="$work/pve-manager"
 mkdir -p "$mgr/DEBIAN"
 cat > "$mgr/DEBIAN/control" <<CTL
@@ -63,18 +61,9 @@ Package: pve-manager
 Version: 9.1.9
 Architecture: all
 Maintainer: e2e harness <root@localhost>
-Description: stand-in for the Proxmox VE manager (trigger recorder only)
+Description: stand-in for the Proxmox VE manager (trigger interest only)
 CTL
 printf 'interest-noawait pve-api-updates\n' > "$mgr/DEBIAN/triggers"
-cat > "$mgr/DEBIAN/postinst" <<'POST'
-#!/bin/sh
-if [ "$1" = triggered ]; then
-    flags=$(grep -o "'zfs', 'send', '[^']*'" /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm 2>/dev/null)
-    echo "daemons reloaded with: ${flags:-no file}" >> /var/log/e2e-daemon-reload.log
-fi
-exit 0
-POST
-chmod 755 "$mgr/DEBIAN/postinst"
 dpkg-deb --root-owner-group -Zgzip --build "$mgr" "$repo/pve-manager_9.1.9_all.deb" >/dev/null
 
 # An unrelated package to reinstall, so a check can fire the hook without

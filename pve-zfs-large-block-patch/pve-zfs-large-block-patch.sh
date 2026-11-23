@@ -287,11 +287,5 @@ done
 check_all_sites "The known send call was patched (backup: $backup)."
 
 echo "${prefix} ${YELLOW}APPLIED${RESET} - patched $FILE to add -L flag (backup: $backup)" >&2
-# pvescheduler forks each replication run from the code it loaded at start,
-# and pvedaemon and pveproxy do the same for API calls. pve-manager's dpkg
-# trigger reloads them during the dpkg run, before this hook patches the file,
-# so they keep sending without -L until something reloads them again.
-echo "${prefix} ${YELLOW}APPLIED${RESET} - Running Proxmox daemons still hold the unpatched code. Reload them so replication and migration send with -L:" >&2
-echo "${prefix} ${YELLOW}APPLIED${RESET} -   systemctl reload-or-try-restart pvedaemon.service pveproxy.service pvescheduler.service" >&2
 logger -p daemon.notice -t "$TAG" -- "patched $FILE to add -L flag (backup: $backup)" 2>/dev/null || true
 exit 0

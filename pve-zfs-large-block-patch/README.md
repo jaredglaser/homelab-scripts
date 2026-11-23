@@ -62,7 +62,7 @@ Run these on the Proxmox node, as root.
 
    The `|| true` guard is intentional. The hook runs after dpkg has finished, so without it a script that exits 1 would not stop any package from being installed: apt would print `E: Problem executing scripts DPkg::Post-Invoke` and exit 100 on every run while the warning lasts, and anything that runs apt unattended would treat each of those upgrades as failed. With the guard apt reports success even when the patch failed, which is why failures also go to syslog. Do not treat apt's exit code as evidence the patch applied.
 
-   `DPkg::Post-Invoke` is an apt setting. Running `dpkg` directly (`dpkg -i libpve-storage-perl_*.deb`, `dpkg --configure -a`) can replace the file without running the hook, so run the script by hand after doing that, then reload the daemons as in step 4. The next apt run that invokes dpkg, for any package, also runs the hook and re-patches.
+   `DPkg::Post-Invoke` is an apt setting. Running `dpkg` directly (`dpkg -i libpve-storage-perl_*.deb`, `dpkg --configure -a`) can replace the file without running the hook, so run the script by hand after doing that. The next apt run that invokes dpkg, for any package, also runs the hook and re-patches.
 
 3. Apply the patch immediately to confirm it works against the current state of the file:
 
@@ -73,7 +73,7 @@ Run these on the Proxmox node, as root.
    All output goes to stderr. Expected output is one of:
 
    - `OK - patch already present in ... (no changes needed)` if the file is already patched and every call site has `-L`. Exits 0. Not logged.
-   - `APPLIED - patched ... to add -L flag (backup: ...)` when the script rewrote the file, followed by the reload command from step 4. Exits 0. Logged at `daemon.notice`.
+   - `APPLIED - patched ... to add -L flag (backup: ...)` when the script rewrote the file. Exits 0. Logged at `daemon.notice`.
    - `NOT INSTALLED - libpve-storage-perl is absent ...` if the file is missing and dpkg has no record of the package or reports it as `not-installed` or `config-files`. This node has no reason to run the patch, so the message lists the script and the hook file to remove. Exits 0. Not logged.
    - `WARNING - libpve-storage-perl is <state> but ... is missing` if the file is missing but the package is present. `<state>` is the dpkg state: `installed`, `half-installed`, `unpacked`, `half-configured`, `triggers-awaited` or `triggers-pending`. Upstream may have moved the file, and replication of >128K recordsize datasets may be silently broken. Exits 1.
    - `WARNING - ... does not contain expected pattern` if the file has neither of the two lines the script rewrites, nor their patched forms, outside comments. The file is left untouched. Exits 1.
@@ -82,13 +82,7 @@ Run these on the Proxmox node, as root.
 
    Every `FAILED` before the rewrite leaves the file untouched. After a `sed` error the script compares the file with the backup and says either that the file is unchanged or which backup to restore. A failure after the rewrite (the post-patch check, or a read error while checking the result) names the backup to restore.
 
-4. Reload the Proxmox daemons after every `APPLIED`, this first one included:
-
-   ```bash
-   systemctl reload-or-try-restart pvedaemon.service pveproxy.service pvescheduler.service
-   ```
-
-   Patching the file on disk does not change the code that is already running. `pvescheduler` forks each replication run from the Perl modules it loaded when it started, and `pvedaemon` and `pveproxy` do the same for API calls such as a migration started from the web UI. When `libpve-storage-perl` is upgraded, pve-manager's dpkg trigger reloads these daemons while dpkg is still running, which is before the hook patches the file. So after every re-patch by the hook, replication keeps sending without `-L` until the daemons are reloaded again, and the next replication of a dataset whose chain was started with `-L` fails. The `APPLIED` output repeats this command, and it is the same reload pve-manager runs on each update of its Perl packages.
+   No service needs a restart afterwards. Replication and migration run each send in a new `pvesm export` process (`$volume_export_prepare` in upstream `src/PVE/Storage.pm`), which loads `ZFSPoolPlugin.pm` from disk, so the next run uses the patched file.
 
 ## Verify the hook re-applies after an update
 
@@ -112,11 +106,7 @@ Processing triggers for pve-manager (9.1.9) ...
 Processing triggers for man-db (2.13.1-1) ...
 Processing triggers for pve-ha-manager (5.2.0) ...
 [pve-zfs-L-patch] APPLIED - patched /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm to add -L flag (backup: /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp>.<pid>)
-[pve-zfs-L-patch] APPLIED - Running Proxmox daemons still hold the unpatched code. Reload them so replication and migration send with -L:
-[pve-zfs-L-patch] APPLIED -   systemctl reload-or-try-restart pvedaemon.service pveproxy.service pvescheduler.service
 ```
-
-`Processing triggers for pve-manager` is where the daemons were reloaded, with the unpatched file, so run the reload command from Install step 4 now.
 
 The same message is in `journalctl -t pve-zfs-L-patch`. If the reinstalled file is identical to the newest backup, the run says it is reusing that backup and the `APPLIED` line names it.
 
@@ -133,7 +123,7 @@ You should see `-RpvUL` on 9.1.3+ or `-RpvL` on older releases. Upstream added `
 
 ## When the hook warns or fails
 
-Every `WARNING` and `FAILED` line is also in `journalctl -t pve-zfs-L-patch -p err`, first line only. After fixing the cause, run the script by hand and reload the daemons (Install steps 3 and 4): the hook does not run again until the next apt run that invokes dpkg.
+Every `WARNING` and `FAILED` line is also in `journalctl -t pve-zfs-L-patch -p err`, first line only. After fixing the cause, run the script by hand (Install step 3): the hook does not run again until the next apt run that invokes dpkg.
 
 - `FAILED`: the first line names the cause, including the error from `sed`, `cp`, `mkdir` or `dpkg-query` where one of them failed. The file is unchanged unless a later line names a backup to restore.
 - `WARNING - ... is missing` or `WARNING - ... does not contain expected pattern`: upstream moved or rewrote the send call, and this script does not know the new shape. Replication of datasets with `recordsize` above 128K now sends without `-L`. Find the call with `grep -rn "'zfs', 'send'" /usr/share/perl5/PVE/`, and check this repository for an updated script before editing the file by hand. A hand edit is undone by the next update of the package, and the warning repeats on every apt run until the script knows the new shape.
@@ -175,12 +165,6 @@ Then restore the file. Two options:
 
   Restoring a backup from another version leaves a file that does not match the installed package.
 
-Either way, reload the daemons afterwards, because they still hold the patched code:
-
-```bash
-systemctl reload-or-try-restart pvedaemon.service pveproxy.service pvescheduler.service
-```
-
 `dpkg --verify libpve-storage-perl` prints nothing once the file matches the package again. While the patch is in place it lists `ZFSPoolPlugin.pm` with a `5` in the checksum column, which is expected.
 
 ## Uninstall
@@ -212,5 +196,7 @@ Run from the repo root. The suite passes as root and as an unprivileged user. It
 The fixtures under `tests/fixtures/` are verbatim excerpts of upstream `src/PVE/Storage/ZFSPoolPlugin.pm` from `pve-storage.git`, so the patch is exercised against real surrounding code. `u.pm` is lines 941-968 of `HEAD` as of 2026-11-23 (`libpve-storage-perl` 9.1.23). `plain.pm` is lines 776-803 of commit `e17a33794c34`, the last version of the file before `-U` was added. The `-patched.pm` files are the same excerpts with `L` added to the send flags, the expected results. Re-cut them from upstream when the send flags change.
 
 `tests/bin/` is on `PATH` for every test and holds stubs for `dpkg-query` and `logger`. Both record their full argument lists, so the tests assert the package name, the query format, and the syslog priority and tag. Root ignores file modes, so failures are forced with stubs in `tests/stubs/` instead of `chmod`: a `cp` that writes a partial copy, a `sed` that fails or does nothing, a `grep` that reports a read error, and a `mktemp` that fails as it does on a full `/tmp`. A test links one in with `with_stub` for that test only. A backup directory whose parent is a regular file covers the `mkdir` failure.
+
+Two rules keep the suite away from the real file. `setup()` confirms `mktemp -d` worked before it exports the overrides, because the script falls back to the real `/usr/share/perl5` path when they are empty. A test that runs without `PVE_ZFS_PATCH_TESTING=1` must make the script stop before it touches any file, as the override test does with a failing `dpkg-query`.
 
 `tests/e2e/` holds a separate end-to-end check that installs the script per this README on a stand-in node in Docker, with real apt, dpkg and journald and packages built from upstream `ZFSPoolPlugin.pm`. bats does not run it; see `tests/e2e/README.md`.

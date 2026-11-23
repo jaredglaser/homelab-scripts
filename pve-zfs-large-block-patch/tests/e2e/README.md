@@ -23,10 +23,10 @@ It prints `PASS` or `FAIL` per check, exits 1 if any failed, and names a directo
 
   Three synthetic variants of HEAD reach the `WARNING` states: `9.1.23+syn.moved` ships the file under another name, `9.1.23+syn.shape` changes the flags to `-RpvUw`, and `9.1.23+syn.extra` adds a second send call without `-L`. They are pinned below the real versions, so only an explicit `libpve-storage-perl=<version>` installs one.
 
-  Each package has a conffile, so `apt remove` leaves the `config-files` state, and activates the `pve-api-updates` trigger as upstream does. A stand-in `pve-manager` declares interest in that trigger as upstream does; where upstream reloads pvedaemon, pveproxy and pvescheduler, it records the send flags on disk to `/var/log/e2e-daemon-reload.log`. That shows what the reloaded daemons would run with. `e2e-poke` is an unrelated package to reinstall when a check needs the hook to fire.
+  Each package has a conffile, so `apt remove` leaves the `config-files` state, and activates the `pve-api-updates` trigger as upstream does. A stand-in `pve-manager` declares interest in that trigger as upstream does, so apt prints `Processing triggers for pve-manager` before the hook output, as in the README's sample. `e2e-poke` is an unrelated package to reinstall when a check needs the hook to fire.
 - `eio-fs.py`: a one-file FUSE filesystem whose reads fail with EIO, bind-mounted over the target to give the script a real read error. The VM kernel has no device-mapper, so dm-error was not an option.
 - `walkthrough.sh`: the checks, in README order: install and first run, the README's verify steps, upgrades, downgrades and reinstalls, `dpkg -i`, each `WARNING`, the hook without `|| true`, the script missing, without its execute bit or on a `noexec` mount, an immutable target, a read-only `/usr/share/perl5`, a full backup directory, a full `/tmp`, a read error, the other `FAILED` states, `apt remove` and `purge`, Recovery and Uninstall.
 
 ## Not covered
 
-Real Proxmox daemons: the stand-in `pve-manager` only records what its trigger would have reloaded with. A read error that starts after `sed` has rewritten the file: that needs a writable FUSE filesystem that supports rename, so only the bats suite covers it, with a stub.
+Real Proxmox daemons and replication: the stand-in `pve-manager` has no postinst. A read error that starts after `sed` has rewritten the file: that needs a writable FUSE filesystem that supports rename, so only the bats suite covers it, with a stub.

@@ -449,17 +449,6 @@ EOF
     diff "$PATCH_TMP/before" "$FILE"
 }
 
-@test "APPLIED says the running PVE daemons need a reload, OK does not" {
-    seed u.pm
-    run "$SCRIPT"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"APPLIED"*"systemctl reload-or-try-restart pvedaemon.service pveproxy.service pvescheduler.service"* ]]
-    run "$SCRIPT"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"OK"* ]]
-    [[ "$output" != *"reload"* ]]
-}
-
 @test "APPLIED is logged at notice level under the script's tag" {
     seed u.pm
     run "$SCRIPT"
