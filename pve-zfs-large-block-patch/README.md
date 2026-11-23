@@ -73,7 +73,7 @@ Run these on the Proxmox node, as root.
    All output goes to stderr. Expected output is one of:
 
    - `OK - patch already present in ... (no changes needed)` if the file is already patched and every call site has `-L`. Exits 0. Not logged.
-   - `APPLIED - patched ... to add -L flag (backup: ...)` when the script rewrote the file. Exits 0. Logged at `daemon.notice`.
+   - `APPLIED - patched ... to add -L flag (backup: ...)` when the script rewrote the file, followed by the reload command from step 4. Exits 0. Logged at `daemon.notice`.
    - `NOT INSTALLED - libpve-storage-perl is absent ...` if the file is missing and dpkg has no record of the package or reports it as `not-installed` or `config-files`. This node has no reason to run the patch, so the message lists the script and the hook file to remove. Exits 0. Not logged.
    - `WARNING - libpve-storage-perl is <state> but ... is missing` if the file is missing but the package is present. `<state>` is the dpkg state: `installed`, `half-installed`, `unpacked`, `half-configured`, `triggers-awaited` or `triggers-pending`. Upstream may have moved the file, and replication of >128K recordsize datasets may be silently broken. Exits 1.
    - `WARNING - ... does not contain expected pattern` if the file has neither of the two lines the script rewrites, nor their patched forms, outside comments. The file is left untouched. Exits 1.
@@ -81,6 +81,14 @@ Run these on the Proxmox node, as root.
    - `FAILED - ...` for anything the script refuses to act on or could not finish: a required command missing, a `dpkg-query` that failed or printed something other than one dpkg status value, a broken symlink, a target that is not a regular file, a read error, a backup directory that cannot be created, a backup copy that fails or does not match the original, a `sed` error, or a file that is not correctly patched after `sed`. A query reporting the package as absent is not a failure. Exits 1.
 
    Every `FAILED` before the rewrite leaves the file untouched. After a `sed` error the script compares the file with the backup and says either that the file is unchanged or which backup to restore. A failure after the rewrite (the post-patch check, or a read error while checking the result) names the backup to restore.
+
+4. Reload the Proxmox daemons after every `APPLIED`, this first one included:
+
+   ```bash
+   systemctl reload-or-try-restart pvedaemon.service pveproxy.service pvescheduler.service
+   ```
+
+   Patching the file on disk does not change the code that is already running. `pvescheduler` forks each replication run from the Perl modules it loaded when it started, and `pvedaemon` and `pveproxy` do the same for API calls such as a migration started from the web UI. When `libpve-storage-perl` is upgraded, pve-manager's dpkg trigger reloads these daemons while dpkg is still running, which is before the hook patches the file. So after every re-patch by the hook, replication keeps sending without `-L` until the daemons are reloaded again, and the next replication of a dataset whose chain was started with `-L` fails. The `APPLIED` output repeats this command, and it is the same reload pve-manager runs on each update of its Perl packages.
 
 ## Verify the hook re-applies after an update
 
@@ -102,7 +110,11 @@ Processing triggers for pve-manager (9.1.9) ...
 Processing triggers for man-db (2.13.1-1) ...
 Processing triggers for pve-ha-manager (5.2.0) ...
 [pve-zfs-L-patch] APPLIED - patched /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm to add -L flag (backup: /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp>.<pid>)
+[pve-zfs-L-patch] APPLIED - Running Proxmox daemons still hold the unpatched code. Reload them so replication and migration send with -L:
+[pve-zfs-L-patch] APPLIED -   systemctl reload-or-try-restart pvedaemon.service pveproxy.service pvescheduler.service
 ```
+
+`Processing triggers for pve-manager` is where the daemons were reloaded, with the unpatched file, so run the reload command from Install step 4 now.
 
 The same message is in `journalctl -t pve-zfs-L-patch`. If the reinstalled file is identical to the newest backup, the run says it is reusing that backup and the `APPLIED` line names it.
 
