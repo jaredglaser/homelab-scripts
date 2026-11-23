@@ -29,7 +29,7 @@ HOSTS=(
 die() { echo "lab: $*" >&2; exit 1; }
 need_root() { [[ "$(id -u)" == 0 ]] || die "run as root"; }
 as_user() {
-    runuser -u "$LAB_USER" -- env -i HOME="$LAB_HOME" USER="$LAB_USER" LOGNAME="$LAB_USER" \
+    runuser -u "$LAB_USER" -- env -i HOME="$LAB_HOME" USER="$LAB_USER" LOGNAME="$LAB_USER" SHELL=/bin/bash \
         DISPLAY="$DISPLAY_NUM" LANG=C.UTF-8 XDG_RUNTIME_DIR="$LAB_STATE/run" \
         PATH="$LAB_HOME/bin:/usr/local/bin:/usr/bin:/bin" "$@"
 }
@@ -44,6 +44,8 @@ ca_file() {
 
 cmd_deps() {
     need_root
+    # A fresh VM may have no package lists yet.
+    apt-get update -qq
     DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends \
         konsole xvfb xdotool x11-utils x11-apps imagemagick dbus-x11 fonts-dejavu-core \
         openssh-client nmap socat tmux bats shellcheck curl ca-certificates iproute2 >/dev/null
@@ -96,7 +98,6 @@ EOF
         docker build -q --network host --build-arg https_proxy="$proxy" -t sshl-lab-apt "$build/apt" >/dev/null
     docker image inspect sshl-lab-noapt >/dev/null 2>&1 || \
         docker build -q -t sshl-lab-noapt "$build/noapt" >/dev/null
-    docker image inspect alpine:3.20 >/dev/null 2>&1 || docker pull -q alpine:3.20 >/dev/null
     echo "images ok"
 }
 
@@ -141,8 +142,10 @@ cmd_hosts() {
             docker exec "$name" sed -i "s#^Acquire::https::Proxy .*#Acquire::https::Proxy \"$proxy\";#" /etc/apt/apt.conf.d/90proxy
         fi
     done
+    # The local image without sshd running, so no Docker Hub pull (which a
+    # cloud VM can hit the rate limit on) is needed.
     docker container inspect off01 >/dev/null 2>&1 || \
-        docker run -d --name off01 --hostname off01 --network "$LAB_NET" --ip 172.30.0.17 alpine:3.20 sleep infinity >/dev/null
+        docker run -d --name off01 --hostname off01 --network "$LAB_NET" --ip 172.30.0.17 sshl-lab-noapt sleep infinity >/dev/null
     docker start off01 >/dev/null
     grep -q " cam01.lab$" /etc/hosts || echo "172.30.0.15 cam01.lab" >> /etc/hosts
     echo "hosts ok"
