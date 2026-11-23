@@ -178,4 +178,4 @@ apply_scan_diff() {
     (( has_session )) && sleep 1.2
 }
 
-[[ "${BASH_SOURCE[0]}" == "${0}" ]] && popup_scan
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then popup_scan; fi

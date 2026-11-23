@@ -5,7 +5,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
 
 # Hand-rolled keyboard TUI. State machine: nav (cursor moves) and grab
 # (cursor + held item move together). On apply, rewrite ips.cache in
-# the new order and run tmux move-window for any positions that moved.
+# the new order and swap the live windows to match.
 popup_reorder() {
     read_cache
     if [[ ${#ips[@]} -le 1 ]]; then
@@ -95,13 +95,25 @@ popup_reorder() {
         return 0
     fi
 
+    local rc=0
+    apply_reorder "${items[@]}" || rc=$?
+    if (( rc == 0 )); then
+        sleep 1.2
+        return 0
+    fi
+    sleep 2.5
+    if (( rc == 1 )); then return 1; fi
+}
+
+# Rewrites ips.cache in the given order, then swaps the live windows to
+# match. Returns 1 when the cache write fails, 2 when any swap fails.
+apply_reorder() {
     # Persist first. If write_cache fails (ENOSPC, perms), surface it
     # and leave the live session untouched. Cache stays the source of
     # truth, --rebuild reconciles.
-    ips=("${items[@]}")
+    ips=("$@")
     if ! write_cache; then
         echo "Error: failed to write $CACHE_FILE. Live session unchanged." >&2
-        sleep 2.5
         return 1
     fi
 
@@ -120,8 +132,8 @@ popup_reorder() {
         # by @host_ip stays correct after earlier swaps. move-window -k
         # is unsafe (kills the destination window).
         local i ip target_wid current_idx target_slot err
-        for ((i=0; i<${#items[@]}; i++)); do
-            ip="${items[i]}"
+        for ((i=0; i<${#ips[@]}; i++)); do
+            ip="${ips[i]}"
             target_wid="$(find_window_id_by_ip "$ip")"
             if [[ -z "$target_wid" ]]; then
                 echo "  warn: no window found for $ip, skipping" >&2
@@ -142,11 +154,9 @@ popup_reorder() {
     refresh_session_options
     if (( failed > 0 )); then
         echo "Reordered $moved window(s), $failed failed. Run 'sshl --rebuild' if the session looks wrong." >&2
-        sleep 2.5
-    else
-        echo "Reordered $moved window(s)." >&2
-        sleep 1.2
+        return 2
     fi
+    echo "Reordered $moved window(s)." >&2
 }
 
 # Reads `cursor` and `grabbed` from the caller's scope (popup_reorder
@@ -189,4 +199,4 @@ _reorder_render() {
     done
 }
 
-[[ "${BASH_SOURCE[0]}" == "${0}" ]] && popup_reorder
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then popup_reorder; fi
