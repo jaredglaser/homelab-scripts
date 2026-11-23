@@ -10,14 +10,10 @@ subnet=
 # Tmux session name. No '.' or ':'.
 session_name=homelab
 
-# Terminal emulator to launch (KDE default). It is run as
-# `<terminal> -e tmux ...`, the form konsole, xterm, alacritty, kitty, tilix
-# and foot accept. gnome-terminal gets `--` and xfce4-terminal gets `-x`
-# in place of -e. For a terminal that needs another option, end the value
-# with it (-e, -x or --) and sshl adds nothing.
-# Arguments are allowed, e.g. terminal=konsole --profile homelab
-# xterm's default font lacks the border and status glyphs, so give it one:
-# terminal=xterm -fa Monospace -fs 11
+# Terminal emulator to open the session in. Arguments are allowed, e.g.
+# terminal=konsole --profile homelab or terminal=xterm -fa Monospace.
+# A terminal that does not run a command with -e: end the value with the
+# option it uses instead (-x or --).
 terminal=konsole
 
 # Default SSH username (used when no per-host override)
