@@ -169,3 +169,16 @@ exec sleep 30'
     [[ "$output" == *"broken-term: unknown option --bogus"* ]]
     [[ "$output" == *"Error: the terminal command 'broken-term' exited with status 2"* ]]
 }
+
+@test "sshl: a plain run reopens a host window whose panes both exited, in cache order" {
+    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n192.0.2.3\tfake-host-03\n' \
+        > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    tmux -L "$SOCKET" kill-window -t "$(find_window_id_by_ip 192.0.2.2)"
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Reopened the window for 192.0.2.2 (fake-host-02)."* ]]
+    [ "$(live_order)" = "192.0.2.1 192.0.2.2 192.0.2.3 " ]
+    [ "$(tmux -L "$SOCKET" list-panes -t "$(find_window_id_by_ip 192.0.2.2)" | wc -l)" -eq 2 ]
+}
