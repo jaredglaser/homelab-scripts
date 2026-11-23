@@ -279,3 +279,17 @@ row_of() {
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tpinned' ]
     [ "$(tmux -L "$SOCKET" list-windows -t "=$session_name" -F '#{window_name}')" = "pinned" ]
 }
+
+@test "popup_scan: a host named in the config is listed by that name" {
+    echo "host.192.0.2.1.name=pinned" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    unset _SSHL_LIB
+    source "$SSHL_SRC/sshl-lib.sh"
+    printf '192.0.2.1\tfake-host-01\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_fzf 'cat > "$SSHL_DATA_DIR_OVERRIDE/fzf.in"; exit 130'
+    source "$SSHL_SRC/popup-scan.sh"
+    popup_scan 2>/dev/null
+    grep -Eq '^CURRENT +192\.0\.2\.1 +pinned$' "$SSHL_DATA_DIR_OVERRIDE/fzf.in"
+}

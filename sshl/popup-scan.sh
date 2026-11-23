@@ -52,7 +52,7 @@ popup_scan() {
     # field (whitespace-separated).
     local fzf_input="" name display_name tag
     for ip in "${entries[@]}"; do
-        name="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
+        name="${host_name[$ip]:-${cached_name[$ip]:-${discovered_name[$ip]:-}}}"
         display_name="${name:--}"
         tag="${entry_tag[$ip]}"
         printf -v fzf_input '%s%-7s  %-15s  %s\n' "$fzf_input" "$tag" "$ip" "$display_name"
