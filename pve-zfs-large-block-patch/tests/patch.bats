@@ -355,6 +355,76 @@ syslog_line() {
     [[ "$output" == *"OK"* ]]
 }
 
+@test "message strings that mention zfs send are not call sites" {
+    cat > "$FILE" <<'EOF'
+    my $cmd = ['zfs', 'send', '-RpvUL'];
+    die "zfs send failed\n" if $err;
+    my $msg = "zfs send/receive failed";
+    warn "zfs send stream for $snap was empty\n";
+    log_warn('zfs send aborted');
+    $class->zfs_request($scfg, undef, 'send', '-v', $snap);
+    my $recv = ['zfs', 'recv', '-F', '--', $dataset];
+EOF
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OK"* ]]
+}
+
+@test "a string-form zfs send command without -L is still a call site" {
+    local cmd
+    for cmd in '"zfs send -Rpv $snap"' '"zfs send $snap"' '"zfs send @args"' '"zfs send"' "'zfs send -w'"; do
+        cp "$FIXTURES/u-patched.pm" "$FILE"
+        printf '    run_command(%s);\n' "$cmd" >> "$FILE"
+        run "$SCRIPT"
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"without -L (line 29)"* ]]
+    done
+}
+
+@test "a string-form zfs send command with -L passes" {
+    seed u-patched.pm
+    printf '    run_command("zfs send -RpvUL $snap");\n' >> "$FILE"
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OK"* ]]
+}
+
+@test "a commented-out send line is not a call site" {
+    seed u-patched.pm
+    printf "    # my \$send = ['zfs', 'send', '-Rpvw', \$snap];\n#\"zfs send -Rpv \$snap\"\n" >> "$FILE"
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OK"* ]]
+}
+
+@test "a commented-out copy of a reviewed line is neither rewritten nor counted" {
+    seed u-patched.pm
+    printf "    # my \$cmd = ['zfs', 'send', '-Rpv'];\n" >> "$FILE"
+    cp "$FILE" "$PATCH_TMP/before"
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"OK"* ]]
+    diff "$PATCH_TMP/before" "$FILE"
+}
+
+@test "patching the live line leaves a commented-out copy as it was" {
+    seed u.pm
+    printf "    # my \$cmd = ['zfs', 'send', '-RpvU'];\n" >> "$FILE"
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"APPLIED"* ]]
+    { cat "$FIXTURES/u-patched.pm"; printf "    # my \$cmd = ['zfs', 'send', '-RpvU'];\n"; } | diff - "$FILE"
+}
+
+@test "a file whose only reviewed line is commented out is an unknown shape" {
+    printf "    # my \$cmd = ['zfs', 'send', '-RpvU'];\n" > "$FILE"
+    cp "$FILE" "$PATCH_TMP/before"
+    run "$SCRIPT"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"does not contain expected pattern"* ]]
+    diff "$PATCH_TMP/before" "$FILE"
+}
+
 @test "APPLIED is logged at notice level under the script's tag" {
     seed u.pm
     run "$SCRIPT"

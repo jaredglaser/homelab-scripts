@@ -76,34 +76,47 @@ read_fail() {
     fail "cannot read $FILE (grep exit $1). Check permissions and disk health." "${restore_hint[@]}"
 }
 
-# grep exits 2 on a read error, 1 on no match.
+COMMENT_RE='^[[:space:]]*#'
+
+# grep exits 2 on a read error, 1 on no match. A whole-line comment does not
+# count as a match, so a commented-out copy is never taken for live code.
 has_pattern() {
-    local rc
-    grep -F -- "$1" "$FILE" >/dev/null; rc=$?
-    [ "$rc" -le 1 ] && return "$rc"
-    read_fail "$rc"
+    local rc matches line
+    matches=$(grep -F -- "$1" "$FILE"); rc=$?
+    [ "$rc" -le 1 ] || read_fail "$rc"
+    [ "$rc" -eq 1 ] && return 1
+    while IFS= read -r line; do
+        [[ $line =~ $COMMENT_RE ]] || return 0
+    done <<< "$matches"
+    return 1
 }
 
-# A call site is 'zfs', 'send' as a Perl list (either quote style, any spacing)
-# or a quoted string that starts with zfs send. Its flag words are the -xyz
-# words after it on the same line, up to the next call site. A site passes when
-# one of them contains L, or --large-block follows it. A site whose flags are
-# on a later line has none on its own line, so it fails rather than passes.
-SITE_RE="['\"]zfs(['\"][[:space:]]*,[[:space:]]*['\"]|[[:space:]]+)send([^A-Za-z0-9_-]|\$)"
+# A call site is 'zfs', 'send' as a Perl list (either quote style, any spacing),
+# or a quoted string that starts with zfs send followed by whitespace and an
+# argument starting with -, $ or @, or by the closing quote. That keeps message
+# text such as "zfs send failed" out. Whole-line # comments are skipped. Its
+# flag words are the -xyz words after it on the same line, up to the next call
+# site. A site passes when one of them contains L, or --large-block follows it.
+# A site whose flags are on a later line has none on its own line, so it fails.
+SITE_RE="['\"]zfs(['\"][[:space:]]*,[[:space:]]*['\"]send['\"]|[[:space:]]+send([[:space:]]+[-\$@]|['\"]))"
 L_FLAG_RE='(^|[^A-Za-z0-9_-])-[A-Za-z]*L[A-Za-z]*([^A-Za-z0-9_-]|$)'
 
 # Prints "line N: <code>" for each call site without -L. Exits via fail on a
 # read error.
 sites_without_l() {
-    local sites rc entry lineno rest seg
+    local sites rc entry lineno rest seg match
     sites=$(grep -nE -- "$SITE_RE" "$FILE"); rc=$?
     [ "$rc" -le 1 ] || read_fail "$rc"
     [ "$rc" -eq 1 ] && return 0
     while IFS= read -r entry; do
         lineno="${entry%%:*}"
         rest="${entry#*:}"
+        [[ $rest =~ $COMMENT_RE ]] && continue
         while [[ $rest =~ $SITE_RE ]]; do
-            rest="${rest#*"${BASH_REMATCH[0]}"}"
+            match="${BASH_REMATCH[0]}"
+            rest="${rest#*"$match"}"
+            # The string form consumes the first character of the next word.
+            case "${match: -1}" in [-\$@]) rest="${match: -1}$rest" ;; esac
             seg="$rest"
             [[ $seg =~ $SITE_RE ]] && seg="${seg%%"${BASH_REMATCH[0]}"*}"
             if ! [[ $seg =~ $L_FLAG_RE ]] && [[ $seg != *--large-block* ]]; then
@@ -196,10 +209,10 @@ sed_args=()
 targets=()
 originals=()
 if has_pattern "$U_ORIGINAL"; then
-    sed_args+=(-e "$U_SED"); originals+=("$U_ORIGINAL"); targets+=("$U_TARGET")
+    sed_args+=(-e "/$COMMENT_RE/!$U_SED"); originals+=("$U_ORIGINAL"); targets+=("$U_TARGET")
 fi
 if has_pattern "$PLAIN_ORIGINAL"; then
-    sed_args+=(-e "$PLAIN_SED"); originals+=("$PLAIN_ORIGINAL"); targets+=("$PLAIN_TARGET")
+    sed_args+=(-e "/$COMMENT_RE/!$PLAIN_SED"); originals+=("$PLAIN_ORIGINAL"); targets+=("$PLAIN_TARGET")
 fi
 
 if [ "${#sed_args[@]}" -eq 0 ]; then
