@@ -285,3 +285,14 @@ esac'
     [ "${ignored_ips[0]}" = "192.0.2.3" ]
     [ -z "${ignored_name[192.0.2.3]:-}" ]
 }
+
+@test "tmux_new_enough: accepts 3.2 and later, and a version it cannot read" {
+    local v
+    for v in 3.2 3.2a 3.3a 3.4 3.10 next-3.6 3.5-rc master openbsd-7.6 ""; do
+        tmux_new_enough "$v" || { echo "rejected $v"; return 1; }
+    done
+    for v in 3.1c 3.0a 2.9 next-3.1; do
+        run tmux_new_enough "$v"
+        [ "$status" -ne 0 ] || { echo "accepted $v"; return 1; }
+    done
+}
