@@ -111,7 +111,7 @@ read_cache() {
         c_name="$(trim "$c_name")"
         [[ -z "$c_ip" ]] && continue
         ips+=("$c_ip")
-        [[ -n "$c_name" ]] && cached_name["$c_ip"]="$c_name"
+        if [[ -n "$c_name" ]]; then cached_name["$c_ip"]="$c_name"; fi
     done < "$CACHE_FILE"
 }
 
@@ -125,7 +125,7 @@ read_ignored() {
         c_name="$(trim "$c_name")"
         [[ -z "$c_ip" ]] && continue
         ignored_ips+=("$c_ip")
-        [[ -n "$c_name" ]] && ignored_name["$c_ip"]="$c_name"
+        if [[ -n "$c_name" ]]; then ignored_name["$c_ip"]="$c_name"; fi
     done < "$IGNORED_FILE"
 }
 
@@ -177,7 +177,8 @@ resolve_remote_hostname() {
     local name
     # Errors (including auth failures from a wrong user) are silenced
     # because this runs in a background subshell during scan_subnet.
-    # A misconfigured user shows up as a bare-IP display name.
+    # A host that neither this nor reverse DNS can name is still listed,
+    # and its window is named by its IP.
     name=$(ssh -o BatchMode=yes \
                -o ConnectTimeout=3 \
                -o StrictHostKeyChecking=accept-new \
@@ -234,7 +235,7 @@ scan_subnet() {
                 name="$(resolve_remote_hostname "$ip" || true)"
             fi
             if [[ -z "$name" ]]; then
-                name="$(getent hosts "$ip" 2>/dev/null | awk '{print $2}' | head -n1)"
+                name="$(getent hosts "$ip" 2>/dev/null | awk '{print $2}' | head -n1 || true)"
                 name="${name%%.*}"
             fi
             printf '%s\t%s\n' "$ip" "$name"
