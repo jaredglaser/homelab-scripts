@@ -1,16 +1,30 @@
 name: Test pve-zfs-large-block-patch
 on:
   push:
+    branches: [main]
     paths: ['pve-zfs-large-block-patch/**', '.github/workflows/test-pve-zfs-large-block-patch.yml']
   pull_request:
     paths: ['pve-zfs-large-block-patch/**', '.github/workflows/test-pve-zfs-large-block-patch.yml']
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get install -y bats
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y bats shellcheck
+      - name: Shellcheck the script and test stubs
+        run: |
+          shellcheck pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh \
+            pve-zfs-large-block-patch/tests/bin/* \
+            pve-zfs-large-block-patch/tests/stubs/* \
+            pve-zfs-large-block-patch/tests/test_helper.bash
+          shellcheck -S warning pve-zfs-large-block-patch/tests/patch.bats
       - name: Run pve-zfs-large-block-patch tests
         run: bats pve-zfs-large-block-patch/tests/
