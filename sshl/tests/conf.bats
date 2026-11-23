@@ -85,6 +85,43 @@ term_hides() {
     tmux -L "$SOCKET" show-messages | grep -q "pane died in fake-host-01\."
 }
 
+@test "pane-died: a pane that dies before any client attaches writes nothing into a pane" {
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 3"
+    wait_until 5 active_pane_is pane_dead 1
+    attach_client_in_terminal
+    wait_until 10 term_shows "clients 1"
+    [ "$(tmux -L "$SOCKET" list-panes -s -t "=$session_name" -F '#{pane_in_mode}' | grep -c 1)" -eq 0 ]
+    term_hides "(null)"
+}
+
+# Clicks are sent as SGR mouse reports, as a terminal sends them for a
+# real click, at the cell left of the refresh glyph, on it, and right of it.
+# The glyph moves while a refresh redraws the text before it, so each click
+# waits for an idle status line and finds the glyph again.
+refresh_glyph_cell() {
+    local row line prefix
+    row="$(term_screen | grep -n "↻" | cut -d: -f1)"
+    line="$(term_screen | sed -n "${row}p")"
+    prefix="${line%%↻*}"
+    printf '%s %s' "$(( $(printf %s "$prefix" | wc -m) + 1 ))" "$row"
+}
+
+@test "refresh button: a click on or next to the glyph forces a refresh" {
+    # Without a UTF-8 locale tmux draws the glyph as "_", as any terminal would.
+    export LANG=C.UTF-8 LC_ALL=C.UTF-8
+    attach_client_in_terminal
+    local col row dx
+    for dx in -1 0 1; do
+        tmux -L "$SOCKET" set -g display-time 100
+        wait_until 10 term_hides "refreshing fake-host-01"
+        wait_until 10 term_shows "updates ? ·"
+        tmux -L "$SOCKET" set -g display-time 3000
+        read -r col row <<<"$(refresh_glyph_cell)"
+        term_keys -l $'\e[<0;'"$((col + dx))"';'"$row"'M'$'\e[<0;'"$((col + dx))"';'"$row"'m'
+        wait_until 5 term_shows "refreshing fake-host-01"
+    done
+}
+
 @test "prefix S: a failing popup stays open with its error until Esc" {
     stub_cmd nmap 'echo "nmap: Failed to resolve given hostname/IP" >&2; exit 1'
     stub_fzf 'exit 2'
