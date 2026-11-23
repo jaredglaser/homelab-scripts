@@ -12,3 +12,5 @@ The suite never touches a real host, the real config or the real `homelab` sessi
 - Tests that need to see the screen attach a real client through `script -qfc` inside a second test tmux server, then read it with `capture-pane`. Keystrokes wait for screen content rather than sleeping.
 
 A new test that sources `sshl-lib.sh` must go through `sshl_setup` in `test_helper.bash`, which checks that `mktemp -d` worked before anything is exported. With empty overrides the library falls back to the real directory and socket.
+
+The suite cannot show a real konsole or real hosts. For that, use the end-to-end lab in [lab/](lab/README.md).
