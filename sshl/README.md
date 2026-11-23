@@ -74,6 +74,8 @@ The second status row shows uptime and pending package updates for the host in t
 
 Configuration lives in `sshl/config` (created from `config.example` on first run). Per-host overrides for username, tab name, and pane commands are supported. See the comments in `config.example`.
 
+The config is read when a window is created. After an edit, new windows use it at once, but open windows keep their old user, name and commands until `sshl --rebuild`, which closes every sshl terminal and opens a fresh one. A plain `sshl` run says when the config changed after the session was built.
+
 A `#` starts a comment at the start of a line or after whitespace, so a `#` inside a value is kept. A line that is not `key=value` is reported with its line number and skipped. The config is rejected at load time, with a message naming the key, when `layout` is not one of `even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`, or when `session_name` is empty or contains `.` or `:`. `terminal` may carry arguments (`terminal=konsole --profile homelab`), split on whitespace.
 
 ## Tests

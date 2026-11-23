@@ -357,6 +357,19 @@ substitute() {
     printf '%s' "$tmpl"
 }
 
+config_mtime() {
+    stat -c %Y "$CONFIG_FILE" 2>/dev/null || true
+}
+
+# Users, names and pane commands from the config only reach a window when
+# it is created, so an edit made after the build does not show until a
+# rebuild.
+config_changed_since_build() {
+    local built
+    built="$("${TMUX_CMD[@]}" show-option -gqv @config_mtime 2>/dev/null)" || return 1
+    [[ -n "$built" && "$built" != "$(config_mtime)" ]]
+}
+
 session_exists() {
     "${TMUX_CMD[@]}" has-session -t "=$session_name" 2>/dev/null
 }
@@ -565,6 +578,7 @@ build_session() {
     # Set last so an aborted build leaves the marker unset. The next
     # session_is_healthy check then forces a clean rebuild.
     "${TMUX_CMD[@]}" set-option -g @build_complete 1
+    "${TMUX_CMD[@]}" set-option -g @config_mtime "$(config_mtime)"
 
     if (( ${#skipped[@]} > 0 )); then
         echo "Skipped ${#skipped[@]} host(s): $(format_host_list "${skipped[@]}"). Fix the cause above and run 'sshl --rebuild' to retry." >&2

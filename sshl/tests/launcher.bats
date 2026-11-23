@@ -182,3 +182,21 @@ exec sleep 30'
     [ "$(live_order)" = "192.0.2.1 192.0.2.2 192.0.2.3 " ]
     [ "$(tmux -L "$SOCKET" list-panes -t "$(find_window_id_by_ip 192.0.2.2)" | wc -l)" -eq 2 ]
 }
+
+@test "sshl: a plain run says when the config changed after the build" {
+    seed_cache
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"changed after the session was built"* ]]
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [[ "$output" != *"changed after the session was built"* ]]
+    set_config default_user otheruser
+    touch -d "@$(( $(date +%s) + 10 ))" "$SSHL_DATA_DIR_OVERRIDE/config"
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$SSHL_DATA_DIR_OVERRIDE/config changed after the session was built"* ]]
+    run env -u TMUX "$SSHL_SRC/sshl" --rebuild
+    [ "$status" -eq 0 ]
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [[ "$output" != *"changed after the session was built"* ]]
+}
