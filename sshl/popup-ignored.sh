@@ -23,7 +23,7 @@ popup_ignored() {
     done
     fzf_input="${fzf_input%$'\n'}"
 
-    local header=$'space toggle • tab toggle+down • enter un-ignore • esc cancel\nticked entries return as scan candidates'
+    local header=$'space or tab tick and move down • enter un-ignore • esc cancel\nticked entries return as scan candidates'
 
     local result rc=0
     result=$(printf '%s\n' "$fzf_input" | multi_select 'ignored> ' "$header") || rc=$?
