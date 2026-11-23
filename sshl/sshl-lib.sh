@@ -406,7 +406,6 @@ set_session_options() {
 # tmux's global environment when they spawn.
 set_session_env() {
     "${TMUX_CMD[@]}" set-environment -g SSHL_DIR    "$SSHL_DIR"   2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_CACHE  "$CACHE_FILE" 2>/dev/null || true
     "${TMUX_CMD[@]}" set-environment -g SSHL_PICKER "$PICKER"     2>/dev/null || true
 }
 
