@@ -52,7 +52,7 @@ popup_scan() {
     # field (whitespace-separated).
     local fzf_input="" name display_name tag
     for ip in "${entries[@]}"; do
-        name="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
+        name="${host_name[$ip]:-${cached_name[$ip]:-${discovered_name[$ip]:-}}}"
         display_name="${name:--}"
         tag="${entry_tag[$ip]}"
         printf -v fzf_input '%s%-7s  %-15s  %s\n' "$fzf_input" "$tag" "$ip" "$display_name"
@@ -60,7 +60,7 @@ popup_scan() {
     fzf_input="${fzf_input%$'\n'}"
 
     local header
-    header=$'space toggle • tab toggle+down • enter apply • esc cancel\n'
+    header=$'space or tab tick and move down • enter apply • esc cancel\n'
     header+='tick CURRENT to remove (and ignore)  •  tick NEW to add  •  leave alone for no change'
 
     local result rc=0
@@ -101,8 +101,8 @@ apply_scan_diff() {
     # explicitly.
     local final_count=$(( ${#ips[@]} - ${#_to_remove[@]} + ${#_to_add[@]} ))
     if (( final_count <= 0 )); then
-        echo "Refusing: would leave zero hosts (session would self-destruct)." >&2
-        echo "Use 'sshl --rebuild' if you really want to start over." >&2
+        echo "Refusing: that would remove every host, and the session closes with its last window." >&2
+        echo "To start over with a scan, run 'tmux -L $SOCKET kill-server', delete $CACHE_FILE, and run sshl again." >&2
         return 1
     fi
 

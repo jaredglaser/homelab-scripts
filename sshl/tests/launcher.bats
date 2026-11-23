@@ -56,12 +56,26 @@ exec "$REAL_TMUX" -L "$SSHL_SOCKET_OVERRIDE-term" -f /dev/null new-session -d -s
     [ "$status" -eq 0 ]
     [[ "$output" == Usage:* ]]
     [[ "$output" == *"--rebuild"* ]]
+    [[ "$output" == *"prefix is Ctrl+b"* ]]
+    [[ "$output" == *"prefix r"* ]]
+    [[ "$output" == *"Config: $SSHL_DATA_DIR_OVERRIDE/config"* ]]
 }
 
 @test "sshl: --rebuild without a cache fails" {
     run env -u TMUX "$SSHL_SRC/sshl" --rebuild
     [ "$status" -eq 1 ]
     [[ "$output" == *"no cache to rebuild from"* ]]
+}
+
+@test "sshl: --rebuild without a cache, while the session runs, says how to start over" {
+    seed_cache
+    read_cache
+    build_session
+    : > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    run env -u TMUX "$SSHL_SRC/sshl" --rebuild
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"session '$session_name' is still running"*"run 'tmux -L $SOCKET kill-server', then sshl with no args"* ]]
+    session_exists
 }
 
 @test "sshl: --rebuild replaces a healthy session with one built from the cache" {
@@ -168,4 +182,35 @@ exec sleep 30'
     [ "$status" -eq 1 ]
     [[ "$output" == *"broken-term: unknown option --bogus"* ]]
     [[ "$output" == *"Error: the terminal command 'broken-term' exited with status 2"* ]]
+}
+
+@test "sshl: a plain run reopens a host window whose panes both exited, in cache order" {
+    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n192.0.2.3\tfake-host-03\n' \
+        > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    tmux -L "$SOCKET" kill-window -t "$(find_window_id_by_ip 192.0.2.2)"
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Reopened the window for 192.0.2.2 (fake-host-02)."* ]]
+    [ "$(live_order)" = "192.0.2.1 192.0.2.2 192.0.2.3 " ]
+    [ "$(tmux -L "$SOCKET" list-panes -t "$(find_window_id_by_ip 192.0.2.2)" | wc -l)" -eq 2 ]
+}
+
+@test "sshl: a plain run says when the config changed after the build" {
+    seed_cache
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"changed after the session was built"* ]]
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [[ "$output" != *"changed after the session was built"* ]]
+    set_config default_user otheruser
+    touch -d "@$(( $(date +%s) + 10 ))" "$SSHL_DATA_DIR_OVERRIDE/config"
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$SSHL_DATA_DIR_OVERRIDE/config changed after the session was built"* ]]
+    run env -u TMUX "$SSHL_SRC/sshl" --rebuild
+    [ "$status" -eq 0 ]
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [[ "$output" != *"changed after the session was built"* ]]
 }

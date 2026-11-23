@@ -285,3 +285,16 @@ esac'
     [ "${ignored_ips[0]}" = "192.0.2.3" ]
     [ -z "${ignored_name[192.0.2.3]:-}" ]
 }
+
+@test "config: the first run creates the config and asks for a subnet before any scan" {
+    rm "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo loaded'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Created $SSHL_DATA_DIR_OVERRIDE/config from config.example. Set subnet= in it"* ]]
+    [[ "$output" != *loaded* ]]
+    cmp "$SSHL_SRC/config.example" "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo "loaded subnet=$subnet"'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'subnet' is not set in $SSHL_DATA_DIR_OVERRIDE/config"*"subnet=192.168.1.0/24"* ]]
+    [[ "$output" != *loaded* ]]
+}

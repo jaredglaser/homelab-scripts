@@ -130,7 +130,9 @@ row_of() {
 
     # The refusal exits non-zero, and its message stays in the pane.
     wait_for_popup_exit "$pane" 1
-    wait_for_pane_content "$pane" "Refusing: would leave zero hosts"
+    wait_for_pane_content "$pane" "Refusing: that would remove every host"
+    # The advice must not be --rebuild, which only rebuilds from the cache.
+    tmux -L "$SOCKET" capture-pane -t "$pane" -p -J | grep -q "To start over with a scan, run 'tmux -L $SOCKET kill-server', delete $SSHL_DATA_DIR_OVERRIDE/ips.cache, and run sshl again."
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = "$before" ]
     [ "$(live_order)" = "192.0.2.1 " ]
 }
@@ -278,4 +280,30 @@ row_of() {
     popup_scan 2>/dev/null
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tpinned' ]
     [ "$(tmux -L "$SOCKET" list-windows -t "=$session_name" -F '#{window_name}')" = "pinned" ]
+}
+
+@test "popup_scan: a host named in the config is listed by that name" {
+    echo "host.192.0.2.1.name=pinned" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    unset _SSHL_LIB
+    source "$SSHL_SRC/sshl-lib.sh"
+    printf '192.0.2.1\tfake-host-01\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_fzf 'cat > "$SSHL_DATA_DIR_OVERRIDE/fzf.in"; exit 130'
+    source "$SSHL_SRC/popup-scan.sh"
+    popup_scan 2>/dev/null
+    grep -Eq '^CURRENT +192\.0\.2\.1 +pinned$' "$SSHL_DATA_DIR_OVERRIDE/fzf.in"
+}
+
+@test "popup_scan: a ticked row is marked with a visible character" {
+    require_popup_fzf
+    build_one_host_session
+    pane=$(start_popup)
+    wait_for_info "$pane" 2 0
+    tmux -L "$SOCKET" send-keys -t "$pane" " "
+    wait_for_info "$pane" 2 1
+    tmux -L "$SOCKET" capture-pane -t "$pane" -p | grep -Eq '^ ?\+ ?CURRENT +192\.0\.2\.1 '
+    tmux -L "$SOCKET" send-keys -t "$pane" Escape
+    wait_for_popup_exit "$pane" 0
 }

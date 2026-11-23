@@ -8,17 +8,22 @@ for arg in "$@"; do
         -h|--help)
             cat <<EOF
 Usage: $(basename "$0") [options]
-  -R, --rebuild    Nuke the tmux server and rebuild windows from cache.
+  -R, --rebuild    Close every sshl terminal, rebuild the session from the
+                   cache, and open a fresh terminal on it.
   -h, --help       Show this help.
 
 With no flags: bootstrap a new session (scan + filter on first run) or
 attach a grouped view to the existing session.
 
-Inside the session, use these key bindings to manage hosts:
+Inside the session, prefix is Ctrl+b:
   prefix S    Scan + add or remove hosts (popup)
   prefix O    Reorder windows (popup)
   prefix I    Show ignored hosts to un-ignore (popup)
   prefix H    Fuzzy jump to a host
+  prefix r    Respawn a dead pane and refresh the host info
+Click a tab to switch hosts, and the status bar's ↻ to refresh the host info.
+
+Config: ${SSHL_DATA_DIR_OVERRIDE:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")}/config
 EOF
             exit 0 ;;
         *) echo "Unknown argument: $arg. Run '$(basename "$0") --help' for the options." >&2; exit 1 ;;
@@ -35,7 +40,12 @@ read_ignored
 built=false
 if $rebuild; then
     if [[ ${#ips[@]} -eq 0 ]]; then
-        echo "Error: no cache to rebuild from. Run sshl with no args to bootstrap." >&2
+        if session_exists; then
+            # A plain run would reattach this session instead of scanning.
+            echo "Error: no cache to rebuild from, and session '$session_name' is still running. To start over with a scan, run 'tmux -L $SOCKET kill-server', then sshl with no args." >&2
+        else
+            echo "Error: no cache to rebuild from. Run sshl with no args to bootstrap." >&2
+        fi
         exit 1
     fi
     build_session
@@ -59,6 +69,8 @@ elif ! session_is_healthy; then
         build_session
         built=true
     fi
+else
+    reopen_missing_windows
 fi
 
 # Warm host-info cache so window switches hit a fresh entry. The
@@ -83,6 +95,9 @@ fi
 session_exists && set_session_env
 
 $built || echo "Reusing existing session '$session_name' (use --rebuild to recreate)." >&2
+if ! $built && config_changed_since_build; then
+    echo "$CONFIG_FILE changed after the session was built. Open windows keep their old users, names and commands until 'sshl --rebuild', which closes every sshl terminal and opens a fresh one." >&2
+fi
 
 # Grouped attach: a new session sharing the base session's windows but
 # with its own focus. destroy-unattached cleans up when the konsole

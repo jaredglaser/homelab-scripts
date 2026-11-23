@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Fuzzy-pick a host from the sshl cache and jump to its window.
+# Fuzzy-pick a host window of the sshl session and jump to it.
 # Invoked from the `<prefix> H` binding in homelab.tmux.conf.
 set -euo pipefail
 
-cache="${TMUX_HOMELAB_CACHE:?TMUX_HOMELAB_CACHE not set}"
 # The popup shell carries $TMUX for the sshl server, and a bare tmux
 # command follows it. Outside tmux, fall back to the sshl socket.
 if [[ -n "${SSHL_SOCKET_OVERRIDE:-}" ]]; then
@@ -20,12 +19,12 @@ if ! command -v fzf &>/dev/null; then
     exit 0
 fi
 
+# List the windows rather than ips.cache, so each row carries the name on
+# its tab, host.<ip>.name from the config included.
 rc=0
-pick=$(awk -F'\t' '
-    NF && $1 !~ /^#/ {
-        printf "%-18s %s\n", $1, ($2 == "" ? "-" : $2)
-    }
-' "$cache" | fzf --prompt='host> ' --height=100% --reverse --no-sort) || rc=$?
+pick=$("${tmux_cmd[@]}" list-windows -F '#{@host_ip} #{window_name}' 2>/dev/null | awk '
+    NF == 2 { printf "%-18s %s\n", $1, $2 }
+' | fzf --prompt='host> ' --height=100% --reverse --no-sort) || rc=$?
 # 1 is no match and 130 is Esc. The popup (display-popup -EE) stays open
 # on any other status, so the message below stays readable.
 case "$rc" in
@@ -40,7 +39,6 @@ esac
 ip=$(awk '{print $1}'  <<<"$pick")
 name=$(awk '{print $2}' <<<"$pick")
 display="${name:-$ip}"
-[[ "$display" == "-" ]] && display="$ip"
 
 # Target the window by id resolved from @host_ip, not by name. Two
 # hosts with the same short hostname collide under name targeting

@@ -81,8 +81,10 @@ multi_select() {
     # fzf --multi accepts the highlighted row when nothing is ticked, so
     # Enter and double-click accept only while something is. fzf runs the
     # transform in $SHELL, and a login shell such as fish may not parse it.
+    # fzf's default marker is a thin bar, easy to miss next to a row.
     # shellcheck disable=SC2016  # FZF_SELECT_COUNT is expanded by fzf's shell
     SHELL="$BASH" fzf --multi --reverse --no-sort --height=100% \
+        --marker='+' \
         --header="$header" --header-first \
         --bind='space:toggle+down' \
         --bind='enter:transform:[ "$FZF_SELECT_COUNT" -gt 0 ] && echo accept || echo abort' \
@@ -101,7 +103,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
             echo "Error: failed to copy config.example to $CONFIG_FILE (check permissions and disk space)" >&2
             exit 1
         }
-        echo "Created config from config.example. Review $CONFIG_FILE before re-running." >&2
+        echo "Created $CONFIG_FILE from config.example. Set subnet= in it to the network your hosts are on, then run sshl again." >&2
     else
         echo "Error: config file not found at $CONFIG_FILE" >&2
     fi
@@ -152,7 +154,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done < "$CONFIG_FILE"
 
 if [[ -z "$subnet" ]]; then
-    echo "Error: 'subnet' not set in $CONFIG_FILE" >&2
+    echo "Error: 'subnet' is not set in $CONFIG_FILE. Set it to the network your hosts are on, in CIDR form such as subnet=192.168.1.0/24." >&2
     exit 1
 fi
 
@@ -357,6 +359,19 @@ substitute() {
     printf '%s' "$tmpl"
 }
 
+config_mtime() {
+    stat -c %Y "$CONFIG_FILE" 2>/dev/null || true
+}
+
+# Users, names and pane commands from the config only reach a window when
+# it is created, so an edit made after the build does not show until a
+# rebuild.
+config_changed_since_build() {
+    local built
+    built="$("${TMUX_CMD[@]}" show-option -gqv @config_mtime 2>/dev/null)" || return 1
+    [[ -n "$built" && "$built" != "$(config_mtime)" ]]
+}
+
 session_exists() {
     "${TMUX_CMD[@]}" has-session -t "=$session_name" 2>/dev/null
 }
@@ -393,17 +408,19 @@ set_session_options() {
 # tmux's global environment when they spawn.
 set_session_env() {
     "${TMUX_CMD[@]}" set-environment -g SSHL_DIR    "$SSHL_DIR"   2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_CACHE  "$CACHE_FILE" 2>/dev/null || true
     "${TMUX_CMD[@]}" set-environment -g SSHL_PICKER "$PICKER"     2>/dev/null || true
 }
 
 # Add a window for a host. With --first, opens the session via
-# new-session (caller must guarantee no session exists yet). Without
-# --first, appends a window to the existing session. Returns 1, with any
-# partial window already killed, when the host gets no usable window.
+# new-session (caller must guarantee no session exists yet). With
+# --before WID, inserts the window before window WID. Otherwise appends a
+# window to the existing session. Returns 1, with any partial window
+# already killed, when the host gets no usable window.
 add_window() {
     local first=false
+    local -a where=(-t "=$session_name:")
     if [[ "${1:-}" == "--first" ]]; then first=true; shift; fi
+    if [[ "${1:-}" == "--before" ]]; then where=(-b -t "$2"); shift 2; fi
     local ip="$1"
 
     local user name left right right_title
@@ -422,7 +439,7 @@ add_window() {
             return 1
         }
     else
-        wid=$("${TMUX_CMD[@]}" new-window -t "=$session_name:" -n "$name" \
+        wid=$("${TMUX_CMD[@]}" new-window "${where[@]}" -n "$name" \
             -P -F '#{window_id}' "$left") || {
             echo "Warning: failed to create window for $ip ($name), skipping" >&2
             return 1
@@ -468,6 +485,37 @@ kill_host_window() {
         return 0
     fi
     "${TMUX_CMD[@]}" kill-window -t "$wid" 2>/dev/null || true
+}
+
+# A host's window closes for good when both of its panes exit with status
+# 0 (exit in the shell, q in htop), while its IP stays in the cache.
+# Reopen such windows in cache order, so a plain sshl run brings them back
+# without the --rebuild that would close every open terminal.
+reopen_missing_windows() {
+    local i j ip next
+    local -a reopened=() not_reopened=()
+    for (( i = 0; i < ${#ips[@]}; i++ )); do
+        ip="${ips[i]}"
+        [[ -z "$(find_window_id_by_ip "$ip")" ]] || continue
+        next=""
+        for (( j = i + 1; j < ${#ips[@]}; j++ )); do
+            next="$(find_window_id_by_ip "${ips[j]}")"
+            [[ -z "$next" ]] || break
+        done
+        if [[ -n "$next" ]]; then
+            add_window --before "$next" "$ip" || { not_reopened+=("$ip"); continue; }
+        else
+            add_window "$ip" || { not_reopened+=("$ip"); continue; }
+        fi
+        reopened+=("$ip")
+    done
+    if (( ${#reopened[@]} > 0 )); then
+        echo "Reopened the window for $(format_host_list "${reopened[@]}")." >&2
+    fi
+    if (( ${#not_reopened[@]} > 0 )); then
+        echo "Could not reopen the window for $(format_host_list "${not_reopened[@]}"). Fix the cause above and run 'sshl --rebuild' to retry." >&2
+    fi
+    return 0
 }
 
 # kill-server, or killing a session's last window, returns before the
@@ -531,6 +579,7 @@ build_session() {
     # Set last so an aborted build leaves the marker unset. The next
     # session_is_healthy check then forces a clean rebuild.
     "${TMUX_CMD[@]}" set-option -g @build_complete 1
+    "${TMUX_CMD[@]}" set-option -g @config_mtime "$(config_mtime)"
 
     if (( ${#skipped[@]} > 0 )); then
         echo "Skipped ${#skipped[@]} host(s): $(format_host_list "${skipped[@]}"). Fix the cause above and run 'sshl --rebuild' to retry." >&2
