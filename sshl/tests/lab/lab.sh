@@ -12,6 +12,10 @@ LAB_STATE="${LAB_STATE:-/var/tmp/sshl-lab}"
 LAB_NET="sshl-lab"
 LAB_SUBNET="172.30.0.0/24"
 LAB_GW="172.30.0.1"
+# A second network, for subnet= with more than one range.
+LAB_NET2="sshl-lab-vlan"
+LAB_SUBNET2="172.31.0.0/24"
+LAB_GW2="172.31.0.1"
 DISPLAY_NUM="${LAB_DISPLAY:-:99}"
 FZF_VER="0.54.3"
 FZF_SHA256="6867008c46307f036e48b42ab9bfdc3224657f6a65d70c58a1f456c4d9348cf6"
@@ -24,6 +28,7 @@ HOSTS=(
     "pi01 172.30.0.13 sshl-lab-noapt root key"
     "cam01 172.30.0.15 sshl-lab-noapt root nokey"
     "iot01 172.30.0.16 sshl-lab-noapt root nokey"
+    "vlan01 172.31.0.10 sshl-lab-apt root key"
 )
 
 die() { echo "lab: $*" >&2; exit 1; }
@@ -126,6 +131,8 @@ cmd_hosts() {
     need_root
     docker network inspect "$LAB_NET" >/dev/null 2>&1 || \
         docker network create --subnet "$LAB_SUBNET" --gateway "$LAB_GW" "$LAB_NET" >/dev/null
+    docker network inspect "$LAB_NET2" >/dev/null 2>&1 || \
+        docker network create --subnet "$LAB_SUBNET2" --gateway "$LAB_GW2" "$LAB_NET2" >/dev/null
     local proxy port
     proxy="$(proxy_url)"
     if [[ "$proxy" =~ ^https?://(127\.0\.0\.1|localhost):([0-9]+) ]]; then
@@ -152,9 +159,10 @@ cmd_hosts() {
 # share them and recreating one would not change its key. Each new
 # container gets its own.
 start_host() {
-    local name="$1" ip="$2" image="$3" user="$4" key="$5" proxy="$6" home
+    local name="$1" ip="$2" image="$3" user="$4" key="$5" proxy="$6" home net="$LAB_NET"
+    [[ "$ip" == "${LAB_SUBNET2%.0/24}".* ]] && net="$LAB_NET2"
     if ! docker container inspect "$name" >/dev/null 2>&1; then
-        docker run -d --name "$name" --hostname "$name" --network "$LAB_NET" --ip "$ip" "$image" >/dev/null
+        docker run -d --name "$name" --hostname "$name" --network "$net" --ip "$ip" "$image" >/dev/null
         rekey_host "$name"
     fi
     docker start "$name" >/dev/null
@@ -241,7 +249,7 @@ cmd_check() {
         printf '%-6s %-12s %-7s expect %-5s got: %s\n' "$name" "$ip" "$user" "$key" "$out"
     done
     printf 'nmap sees port 22 open on: %s\n' \
-        "$(nmap -Pn -n -p 22 --open --max-retries 1 "$LAB_SUBNET" -oG - 2>/dev/null | awk '/22\/open/{printf "%s ", $2}')"
+        "$(nmap -Pn -n -p 22 --open --max-retries 1 "$LAB_SUBNET" "$LAB_SUBNET2" -oG - 2>/dev/null | awk '/22\/open/{printf "%s ", $2}')"
 }
 
 # Opens a konsole for the lab user. Extra arguments are run in it.
