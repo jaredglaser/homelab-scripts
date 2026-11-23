@@ -31,6 +31,6 @@ jobs:
           sudo tar -xzf fzf.tgz -C /usr/local/bin fzf
           rm fzf.tgz
       - name: Shellcheck
-        run: shellcheck -x sshl/sshl sshl/*.sh sshl/tests/bin/* sshl/tests/test_helper.bash
+        run: shellcheck -x sshl/sshl sshl/*.sh sshl/tests/bin/* sshl/tests/test_helper.bash sshl/tests/lab/lab.sh
       - name: Run sshl tests
         run: bats sshl/tests/
