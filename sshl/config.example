@@ -3,8 +3,9 @@
 # One key=value per line. A # starts a comment at the start of a line or
 # after whitespace, so a # inside a value is kept.
 
-# Subnet to scan for live hosts (CIDR notation)
-subnet=10.1.0.0/16
+# Subnet to scan for live hosts, in CIDR notation such as 192.168.1.0/24.
+# sshl will not run until this is set.
+subnet=
 
 # Tmux session name (no '.' or ':', which tmux reads as separators)
 session_name=homelab
