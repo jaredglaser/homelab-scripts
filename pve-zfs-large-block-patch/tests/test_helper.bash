@@ -1,6 +1,6 @@
 # shellcheck shell=bash
 
-setup() {
+common_setup() {
     TESTS_DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")" && pwd)"
     # shellcheck disable=SC2034 # read by patch.bats
     SCRIPT="$(cd "$TESTS_DIR/.." && pwd)/pve-zfs-large-block-patch.sh"
@@ -29,11 +29,13 @@ setup() {
     BACKUPS="$PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE"
 }
 
-teardown() {
+common_teardown() {
     rm -rf "$PATCH_TMP"
     unset PVE_ZFS_PATCH_TESTING PVE_ZFS_PATCH_FILE_OVERRIDE PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE \
           FAKE_SYSLOG FAKE_DPKG_QUERY_ARGS FAKE_PKG_STATE FAKE_PKG_RC FAKE_PKG_RAW FAKE_PKG_STDERR \
-          FAKE_CP_MODE FAKE_SED_MODE FAKE_GREP_FAIL_MATCH REAL_GREP
+          FAKE_CP_MODE FAKE_SED_MODE FAKE_GREP_FAIL_MATCH REAL_GREP \
+          PVE_ZFS_PATCH_SCRIPT_OVERRIDE PVE_ZFS_PATCH_HOOK_OVERRIDE PVE_ZFS_PATCH_BRANCH \
+          FAKE_CURL_SRC FAKE_CURL_ARGS FAKE_UID
 }
 
 seed() {
@@ -51,3 +53,8 @@ backup_count() {
 only_backup() {
     find "$BACKUPS" -maxdepth 1 -name 'ZFSPoolPlugin.pm.prepatch.*' 2>/dev/null | head -1
 }
+
+# A .bats file that needs more setup defines its own setup() that calls
+# common_setup first.
+setup() { common_setup; }
+teardown() { common_teardown; }

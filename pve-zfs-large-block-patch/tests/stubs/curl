@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Fake curl for tests, linked in by with_stub. Serves FAKE_CURL_SRC to the -o
+# file and records the arguments in FAKE_CURL_ARGS. An empty FAKE_CURL_SRC
+# fails like an HTTP 404 under -f.
+printf '%s\n' "$@" > "${FAKE_CURL_ARGS:-/dev/null}"
+out=""
+while [ $# -gt 0 ]; do
+    [ "$1" = -o ] && { out="$2"; shift; }
+    shift
+done
+if [ -z "${FAKE_CURL_SRC:-}" ]; then
+    echo "curl: (22) The requested URL returned error: 404" >&2
+    exit 22
+fi
+cat "$FAKE_CURL_SRC" > "$out"
