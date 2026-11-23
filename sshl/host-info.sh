@@ -183,7 +183,9 @@ fetch() {
 # the fetch. Its output goes to /dev/null so it does not hold tmux's #()
 # pipe open: tmux does not rerun a job whose pipe is still open.
 start_fetch() {
-    : > "$marker"
+    # A forced fetch marks itself, so a caller that finds it killed knows
+    # to put the bar back to 5s.
+    if $force; then echo force > "$marker"; else : > "$marker"; fi
     (
         trap 'rm -f "$marker"; if $force; then "${tmux_cmd[@]}" set -g status-interval 5 9>&- 2>/dev/null || true; fi' EXIT
         fetch
@@ -231,7 +233,14 @@ if $need_fetch; then
     fetching=true
 elif [[ -e "$marker" ]]; then
     # A marker with a free lock was left by a fetch that was killed.
-    if flock -n 9; then rm -f "$marker"; else fetching=true; fi
+    if flock -n 9; then
+        if [[ "$(cat "$marker" 2>/dev/null)" == force ]]; then
+            "${tmux_cmd[@]}" set -g status-interval 5 9>&- 2>/dev/null || true
+        fi
+        rm -f "$marker"
+    else
+        fetching=true
+    fi
 fi
 exec 9>&-
 
