@@ -8,17 +8,22 @@ for arg in "$@"; do
         -h|--help)
             cat <<EOF
 Usage: $(basename "$0") [options]
-  -R, --rebuild    Nuke the tmux server and rebuild windows from cache.
+  -R, --rebuild    Close every sshl terminal, rebuild the session from the
+                   cache, and open a fresh terminal on it.
   -h, --help       Show this help.
 
 With no flags: bootstrap a new session (scan + filter on first run) or
 attach a grouped view to the existing session.
 
-Inside the session, use these key bindings to manage hosts:
+Inside the session, prefix is Ctrl+b:
   prefix S    Scan + add or remove hosts (popup)
   prefix O    Reorder windows (popup)
   prefix I    Show ignored hosts to un-ignore (popup)
   prefix H    Fuzzy jump to a host
+  prefix r    Respawn a dead pane and refresh the host info
+Click a tab to switch hosts, and the status bar's ↻ to refresh the host info.
+
+Config: ${SSHL_DATA_DIR_OVERRIDE:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")}/config
 EOF
             exit 0 ;;
         *) echo "Unknown argument: $arg. Run '$(basename "$0") --help' for the options." >&2; exit 1 ;;
