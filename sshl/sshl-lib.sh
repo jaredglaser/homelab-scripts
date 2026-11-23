@@ -101,7 +101,7 @@ if [[ ! -f "$CONFIG_FILE" ]]; then
             echo "Error: failed to copy config.example to $CONFIG_FILE (check permissions and disk space)" >&2
             exit 1
         }
-        echo "Created config from config.example. Review $CONFIG_FILE before re-running." >&2
+        echo "Created $CONFIG_FILE from config.example. Set subnet= in it to the network your hosts are on, then run sshl again." >&2
     else
         echo "Error: config file not found at $CONFIG_FILE" >&2
     fi
@@ -152,7 +152,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
 done < "$CONFIG_FILE"
 
 if [[ -z "$subnet" ]]; then
-    echo "Error: 'subnet' not set in $CONFIG_FILE" >&2
+    echo "Error: 'subnet' is not set in $CONFIG_FILE. Set it to the network your hosts are on, in CIDR form such as subnet=192.168.1.0/24." >&2
     exit 1
 fi
 

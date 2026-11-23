@@ -28,7 +28,9 @@ The tmux and bash minimums come from the features the scripts and `homelab.tmux.
 ```bash
 cd sshl
 
-# First run: creates config from config.example, then edit it
+# First run: creates config from config.example and stops. Set subnet=
+# in it to the network your hosts are on, such as 192.168.1.0/24, and
+# default_user= to the user you log in as.
 ./sshl
 
 # After config is set up, the first sshl run scans the subnet and pops a
