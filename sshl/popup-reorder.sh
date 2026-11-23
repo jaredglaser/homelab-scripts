@@ -20,8 +20,6 @@ popup_reorder() {
     local grabbed=0
     local top=0
 
-    # tput smcup/rmcup save and restore the terminal so the list vanishes
-    # cleanly, and civis/cnorm hide and show the cursor.
     tput smcup 2>/dev/null || true
     tput civis 2>/dev/null || true
     # Restore terminal on any exit, including ctrl-c.
@@ -165,10 +163,8 @@ apply_reorder() {
     echo "Reordered $moved window(s)." >&2
 }
 
-# Reads `cursor` and `grabbed` from the caller's scope and moves its `top`
-# (popup_reorder declares all three as local) so the list scrolls with the
-# cursor. Items pass through as positional arguments so the function
-# doesn't also need to dynamically scope `items`.
+# Uses popup_reorder's locals cursor, grabbed and top, and moves top so the
+# list scrolls with the cursor.
 _reorder_render() {
     local items=("$@")
     local cols lines

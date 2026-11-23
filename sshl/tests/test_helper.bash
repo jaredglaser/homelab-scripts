@@ -131,7 +131,6 @@ EOF
     hash -r
 }
 
-# Write an executable stub that shadows a command for the current test only.
 stub_cmd() {
     local name="$1" body="$2"
     printf '#!/usr/bin/env bash\n%s\n' "$body" > "$STUB_BIN/$name"

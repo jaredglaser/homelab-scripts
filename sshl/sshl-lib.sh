@@ -50,7 +50,6 @@ require() {
 # The popups read FZF_SELECT_COUNT, which fzf exports from 0.46.0 on.
 SSHL_FZF_MIN=0.46.0
 
-# The installed fzf version (e.g. 0.54.3), or nothing when fzf cannot say.
 fzf_version() {
     local v
     v="$(fzf --version 2>/dev/null)" || return 0
@@ -531,7 +530,6 @@ wait_for_server_exit() {
     done
 }
 
-# "ip (name), ip (name)" for the hosts given, for messages that name them.
 format_host_list() {
     local out="" ip
     for ip in "$@"; do
