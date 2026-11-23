@@ -130,7 +130,9 @@ row_of() {
 
     # The refusal exits non-zero, and its message stays in the pane.
     wait_for_popup_exit "$pane" 1
-    wait_for_pane_content "$pane" "Refusing: would leave zero hosts"
+    wait_for_pane_content "$pane" "Refusing: that would remove every host"
+    # The advice must not be --rebuild, which only rebuilds from the cache.
+    tmux -L "$SOCKET" capture-pane -t "$pane" -p -J | grep -q "To start over with a scan, run 'tmux -L $SOCKET kill-server', delete $SSHL_DATA_DIR_OVERRIDE/ips.cache, and run sshl again."
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = "$before" ]
     [ "$(live_order)" = "192.0.2.1 " ]
 }

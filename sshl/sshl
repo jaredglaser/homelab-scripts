@@ -40,7 +40,12 @@ read_ignored
 built=false
 if $rebuild; then
     if [[ ${#ips[@]} -eq 0 ]]; then
-        echo "Error: no cache to rebuild from. Run sshl with no args to bootstrap." >&2
+        if session_exists; then
+            # A plain run would reattach this session instead of scanning.
+            echo "Error: no cache to rebuild from, and session '$session_name' is still running. To start over with a scan, run 'tmux -L $SOCKET kill-server', then sshl with no args." >&2
+        else
+            echo "Error: no cache to rebuild from. Run sshl with no args to bootstrap." >&2
+        fi
         exit 1
     fi
     build_session

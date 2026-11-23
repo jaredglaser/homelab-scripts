@@ -67,6 +67,17 @@ exec "$REAL_TMUX" -L "$SSHL_SOCKET_OVERRIDE-term" -f /dev/null new-session -d -s
     [[ "$output" == *"no cache to rebuild from"* ]]
 }
 
+@test "sshl: --rebuild without a cache, while the session runs, says how to start over" {
+    seed_cache
+    read_cache
+    build_session
+    : > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    run env -u TMUX "$SSHL_SRC/sshl" --rebuild
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"session '$session_name' is still running"*"run 'tmux -L $SOCKET kill-server', then sshl with no args"* ]]
+    session_exists
+}
+
 @test "sshl: --rebuild replaces a healthy session with one built from the cache" {
     printf '192.0.2.1\tfake-host-01\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
