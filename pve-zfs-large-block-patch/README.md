@@ -42,7 +42,7 @@ EOF
 /usr/local/sbin/pve-zfs-large-block-patch.sh
 ```
 
-`|| true` keeps a failed patch from making apt exit with an error after every package has already installed. It also means apt's exit status says nothing about the patch; the log does.
+`|| true` keeps a failed patch from making apt exit with an error after every package has already installed. It also means apt's exit status says nothing about the patch. The log does.
 
 </details>
 
