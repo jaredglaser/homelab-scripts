@@ -129,37 +129,30 @@ read_ignored() {
     done < "$IGNORED_FILE"
 }
 
-# Atomic writes via temp + rename so a partial write can't corrupt
-# the cache file mid-update. Both return non-zero on rename failure
-# so callers can distinguish "wrote it" from "didn't" before they
-# touch live tmux state.
-write_cache() {
-    local tmp="${CACHE_FILE}.tmp.$$"
-    : > "$tmp"
-    local ip
-    for ip in "${ips[@]}"; do
-        printf '%s\t%s\n' "$ip" "${cached_name[$ip]:-}" >> "$tmp"
+# Atomic writes via temp + rename, and the rename only happens after
+# the whole body was written, so a failed write (ENOSPC included) keeps
+# the old file. Both return non-zero on any failure so callers can tell
+# "wrote it" from "didn't" before they touch live tmux state.
+_write_host_file() {
+    local dest="$1"
+    local -n _whf_ips=$2 _whf_names=$3
+    local tmp="${dest}.tmp.$$" body="" ip
+    for ip in "${_whf_ips[@]}"; do
+        body+="$ip"$'\t'"${_whf_names[$ip]:-}"$'\n'
     done
-    if ! mv "$tmp" "$CACHE_FILE"; then
+    if ! printf '%s' "$body" > "$tmp" || ! mv "$tmp" "$dest"; then
         rm -f "$tmp"
         return 1
     fi
+}
+
+write_cache() {
+    _write_host_file "$CACHE_FILE" ips cached_name || return 1
     update_cache_mtime_option
-    return 0
 }
 
 write_ignored() {
-    local tmp="${IGNORED_FILE}.tmp.$$"
-    : > "$tmp"
-    local ip
-    for ip in "${ignored_ips[@]}"; do
-        printf '%s\t%s\n' "$ip" "${ignored_name[$ip]:-}" >> "$tmp"
-    done
-    if ! mv "$tmp" "$IGNORED_FILE"; then
-        rm -f "$tmp"
-        return 1
-    fi
-    return 0
+    _write_host_file "$IGNORED_FILE" ignored_ips ignored_name
 }
 
 update_cache_mtime_option() {
