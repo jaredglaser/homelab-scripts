@@ -45,6 +45,10 @@ Active inside the tmux session:
 > [!NOTE]
 > The script runs on a dedicated socket (`tmux -L homelab`) and won't affect your normal tmux sessions. Mouse support is enabled within the session by `homelab.tmux.conf`. The default tmux prefix is `Ctrl+b` (`<prefix>` in the keybindings above). If you've changed yours in `~/.tmux.conf`, use that instead.
 
+## Status bar host info
+
+The second status row shows uptime and pending package updates for the host in the active window. To get them, the status bar and the launcher's startup warm-up log in to each host over SSH (once a day per host, every 5 minutes while a host gives no usable answer, and whenever you press `↻` or `<prefix> r`) and run `apt-get update` there: directly when the user is root, otherwise through `sudo -n`. Where that user has no passwordless sudo, `sudo -n` fails without prompting, the count comes from the package lists as they were, and each attempt can leave a failed sudo entry in that host's auth log. Results are cached per user and host in `$XDG_RUNTIME_DIR/sshl-host-info` (or `~/.cache/sshl-host-info`). The scan popup does not contact hosts beyond the scan and name lookup.
+
 ## Configuration
 
 Configuration lives in `sshl/config` (created from `config.example` on first run). Per-host overrides for username, tab name, and pane commands are supported. See the comments in `config.example`.
