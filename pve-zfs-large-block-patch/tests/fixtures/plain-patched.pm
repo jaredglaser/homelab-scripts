@@ -17,12 +17,12 @@
     }
     push @$cmd, '--', "$scfg->{pool}/$dataset\@$snapshot";
 
-    run_command(
-        $cmd,
-        output => $fd,
-        errfunc => sub {
-            my $line = shift;
-            if ($line !~ /^WARNING: no-preserve-encryption flag set, sending dataset/) {
-                chomp($line);
-                print STDERR "$line\n";
-                *STDERR->flush();
+    run_command($cmd, output => $fd);
+
+    return;
+}
+
+sub volume_export_formats {
+    my ($class, $scfg, $storeid, $volname, $snapshot, $base_snapshot, $with_snapshots) = @_;
+
+    my @formats = ('zfs');
