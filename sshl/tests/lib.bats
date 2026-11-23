@@ -309,3 +309,13 @@ esac'
         [ "$status" -ne 0 ] || { echo "accepted $v"; return 1; }
     done
 }
+
+@test "bash_new_enough: accepts bash 4.4 and later only" {
+    bash_new_enough 4 4
+    bash_new_enough 5 0
+    bash_new_enough 6 0
+    run bash_new_enough 4 3
+    [ "$status" -ne 0 ]
+    run bash_new_enough 3 2
+    [ "$status" -ne 0 ]
+}
