@@ -276,6 +276,26 @@ syslog_line() {
     diff "$FIXTURES/u-patched.pm" "$FILE"
 }
 
+@test "a full /tmp does not stop the patch" {
+    seed u.pm
+    with_stub mktemp
+    run "$SCRIPT"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"APPLIED"* ]]
+    diff "$FIXTURES/u-patched.pm" "$FILE"
+}
+
+@test "a full /tmp still shows a broken dpkg-query's error" {
+    seed u.pm
+    with_stub mktemp
+    export FAKE_PKG_RC=2
+    run "$SCRIPT"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"dpkg-query: error: unable to read database"* ]]
+    [[ "$output" == *"FAILED - cannot determine libpve-storage-perl status (dpkg-query exit 2)"* ]]
+    diff "$FIXTURES/u.pm" "$FILE"
+}
+
 @test "a broken dpkg-query is not treated as an absent package and its error is shown" {
     export FAKE_PKG_RC=2
     run "$SCRIPT"

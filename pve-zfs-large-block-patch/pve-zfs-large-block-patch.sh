@@ -148,10 +148,16 @@ require grep sed cp cmp mkdir rm stat date mktemp dpkg-query
 
 # Capture stdout alone: dpkg prints warnings about unrelated packages on
 # stderr with exit 0, and those must not be read as this package's state.
-pkg_err_file=$(mktemp) || fail "cannot create a temporary file for dpkg-query errors."
-trap 'rm -f "$pkg_err_file"' EXIT
-pkg_state=$(dpkg-query -W -f='${db:Status-Status}\n' "$PKG" 2>"$pkg_err_file"); pkg_rc=$?
-pkg_err=$(<"$pkg_err_file")
+# A full /tmp is no reason to leave the file unpatched, so without a temp
+# file dpkg-query's stderr goes straight to the terminal instead.
+if pkg_err_file=$(mktemp 2>/dev/null); then
+    trap 'rm -f "$pkg_err_file"' EXIT
+    pkg_state=$(dpkg-query -W -f='${db:Status-Status}\n' "$PKG" 2>"$pkg_err_file"); pkg_rc=$?
+    pkg_err=$(<"$pkg_err_file")
+else
+    pkg_state=$(dpkg-query -W -f='${db:Status-Status}\n' "$PKG"); pkg_rc=$?
+    pkg_err="see the dpkg-query output above"
+fi
 
 case "$pkg_rc" in
     0|1) ;;

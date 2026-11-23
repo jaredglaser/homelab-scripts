@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# Failing mktemp for tests, linked in by with_stub, the way a full /tmp fails.
+echo "mktemp: failed to create file via template '/tmp/tmp.XXXXXXXXXX': No space left on device" >&2
+exit 1
