@@ -73,7 +73,7 @@ The second status row shows uptime and pending package updates for the host in t
 
 Configuration lives in `sshl/config` (created from `config.example` on first run). Per-host overrides for username, tab name, and pane commands are supported. See the comments in `config.example`.
 
-A `#` starts a comment at the start of a line or after whitespace, so a `#` inside a value is kept. A line that is not `key=value` is reported with its line number and skipped. The config is rejected at load time, with a message naming the key, when `layout` is not one of `even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`, or when `session_name` is empty or contains `.` or `:`. `terminal` may carry arguments (`terminal=konsole --profile homelab`), split on whitespace.
+A `#` starts a comment at the start of a line or after whitespace, so a `#` inside a value is kept. A line that is not `key=value`, an unknown key, and a per-host key that names a host rather than its IP (`host.web01.user`) are each reported with their line number and skipped. Per-host keys take the IP as the scan lists it, because windows are matched to them by IP. The config is rejected at load time, with a message naming the key, when `layout` is not one of `even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`, or when `session_name` is empty or contains `.` or `:`. `terminal` may carry arguments (`terminal=konsole --profile homelab`), split on whitespace.
 
 ## Terminals
 

@@ -107,7 +107,7 @@ load test_helper
     echo "boguskey=somevalue" >> "$SSHL_DATA_DIR_OVERRIDE/config"
     unset _SSHL_LIB
     stderr=$(source "$SSHL_SRC/sshl-lib.sh" 2>&1 >/dev/null)
-    [[ "$stderr" == *"unknown config key"* ]]
+    [[ "$stderr" == *"unknown key 'boguskey'"* ]]
 }
 
 # Loads the library in a child bash against the test config, then runs
@@ -305,4 +305,20 @@ esac'
     [ "$status" -ne 0 ]
     run bash_new_enough 3 2
     [ "$status" -ne 0 ]
+}
+
+@test "config: an unknown key is reported with its line number" {
+    echo "defualt_user=admin" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo "user=$default_user"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warning: line 7 of $SSHL_DATA_DIR_OVERRIDE/config has an unknown key 'defualt_user', ignoring it."* ]]
+    [[ "$output" == *"user=testuser"* ]]
+}
+
+@test "config: a per-host key that names a host instead of an IP is reported" {
+    echo "host.web01.user=admin" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo "${#host_user[@]} overrides"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warning: line 7 of $SSHL_DATA_DIR_OVERRIDE/config: per-host keys take the host's IP, as in host.192.168.1.10.user, ignoring host.web01.user."* ]]
+    [[ "$output" == *"0 overrides"* ]]
 }
