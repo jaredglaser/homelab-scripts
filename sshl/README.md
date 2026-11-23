@@ -53,7 +53,7 @@ Active inside the tmux session:
 | Key | Action |
 |-----|--------|
 | `<prefix> S` | Scan + filter popup. Each row is tagged CURRENT (already a window) or NEW (just found by the scan). Tick a CURRENT to remove its window and add the IP to `ignored.cache`. Tick a NEW to add a window for it. Untouched rows are no-ops, and Enter with nothing ticked changes nothing. A CURRENT host that did not answer the scan is marked `(not found by this scan)`, which is how a host that moved to a new address shows: once at the old address, marked, and once as NEW. Ignored hosts are hidden. A host whose name the scan finds changed is renamed, unless the config names it. |
-| `<prefix> O` | Reorder popup. Arrow keys or `j`/`k` move the cursor. Press `space` to grab the highlighted host, arrows to move it, `space` again to drop, `enter` to apply, `q`/`esc` to cancel. |
+| `<prefix> O` | Reorder popup. Arrow keys or `j`/`k` move the cursor, and `Home`/`End` (or `g`/`G`) and `PgUp`/`PgDn` jump. Press `space` to grab the highlighted host, arrows to move it, `space` again to drop, `enter` to apply, `q`/`esc` to cancel. |
 | `<prefix> I` | Show ignored hosts. Tick to un-ignore (returns them to the next scan as candidates). |
 | `<prefix> H` | Fuzzy host picker, jumps to selected window |
 | `<prefix> r` | Respawn the window's dead panes, and force-refresh host info. Live panes keep running. A pane stays on screen after its command exits, even cleanly, so a host's window only goes away through `<prefix> S`. |
