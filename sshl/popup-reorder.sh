@@ -31,43 +31,40 @@ popup_reorder() {
         local key
         IFS= read -rsn1 key
         if [[ "$key" == $'\e' ]]; then
-            # Arrow keys send a 3-byte escape sequence: ESC, then '[' or
-            # 'O', then a direction letter. Read the next two chars with
-            # a forgiving timeout.
-            local c1="" c2=""
+            # Arrow, Home and End keys send ESC, then '[' or 'O', then a
+            # letter. Home, End, PgUp and PgDn can also send ESC [ digit ~.
+            # Read the rest with a forgiving timeout.
+            local c1="" c2="" c3=""
             IFS= read -rsn1 -t 0.1  c1 || c1=""
             if [[ -z "$c1" ]]; then
                 key="esc"
             else
                 IFS= read -rsn1 -t 0.05 c2 || c2=""
-                case "$c1$c2" in
+                if [[ "$c2" == [0-9] ]]; then
+                    IFS= read -rsn1 -t 0.05 c3 || c3=""
+                fi
+                case "$c1$c2$c3" in
                     "[A"|"OA") key="up" ;;
                     "[B"|"OB") key="down" ;;
+                    "[H"|"OH"|"[1~"|"[7~") key="home" ;;
+                    "[F"|"OF"|"[4~"|"[8~") key="end" ;;
+                    "[5~") key="pgup" ;;
+                    "[6~") key="pgdn" ;;
                     *)         continue ;;  # unknown sequence, ignore
                 esac
             fi
         fi
+        # Rows per page, as _reorder_render lays them out.
+        local page
+        page=$(( $(tput lines 2>/dev/null || echo 24) - 4 ))
+        (( page < 1 )) && page=1
         case "$key" in
-            up|k)
-                if (( cursor > 0 )); then
-                    if (( grabbed )); then
-                        local tmp="${items[cursor]}"
-                        items[cursor]="${items[cursor-1]}"
-                        items[cursor-1]="$tmp"
-                    fi
-                    ((cursor--))
-                fi
-                ;;
-            down|j)
-                if (( cursor < ${#items[@]} - 1 )); then
-                    if (( grabbed )); then
-                        local tmp="${items[cursor]}"
-                        items[cursor]="${items[cursor+1]}"
-                        items[cursor+1]="$tmp"
-                    fi
-                    (( ++cursor ))
-                fi
-                ;;
+            up|k)   _reorder_move_to $(( cursor - 1 )) ;;
+            down|j) _reorder_move_to $(( cursor + 1 )) ;;
+            home|g) _reorder_move_to 0 ;;
+            end|G)  _reorder_move_to $(( ${#items[@]} - 1 )) ;;
+            pgup)   _reorder_move_to $(( cursor - page )) ;;
+            pgdn)   _reorder_move_to $(( cursor + page )) ;;
             ' ')
                 grabbed=$((1 - grabbed))
                 ;;
@@ -97,6 +94,24 @@ popup_reorder() {
 
     apply_reorder "${items[@]}" || return 1
     sleep 1.2
+}
+
+# Moves the cursor of popup_reorder to a row, clamped to the list, and
+# carries the grabbed host along. Works on the caller's items, cursor and
+# grabbed.
+_reorder_move_to() {
+    local target="$1" last=$(( ${#items[@]} - 1 )) tmp
+    (( target < 0 )) && target=0
+    (( target > last )) && target=$last
+    while (( cursor != target )); do
+        local next=$(( cursor < target ? cursor + 1 : cursor - 1 ))
+        if (( grabbed )); then
+            tmp="${items[cursor]}"
+            items[cursor]="${items[next]}"
+            items[next]="$tmp"
+        fi
+        cursor=$next
+    done
 }
 
 _reorder_restore_term() {
@@ -175,7 +190,7 @@ _reorder_render() {
     tput cup 0 0 2>/dev/null || true
 
     local header_l1="↑/↓ or j/k move cursor • space grab/drop • enter apply • q/esc cancel"
-    local header_l2="grabbed: no"
+    local header_l2="grabbed: no • Home/End PgUp/PgDn jump"
     (( grabbed )) && header_l2="grabbed: YES, arrows now move the held item"
     printf '%s\n' "$header_l1"
     printf '%s\n' "$header_l2"

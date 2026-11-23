@@ -97,6 +97,9 @@ ttl=86400
 # A failed fetch retries after 5m instead of pinning the host as unknown
 # for the full 24h, without hammering a host that's genuinely down.
 unknown_ttl=300
+# ConnectTimeout covers only connecting. Without a cap, a host that freezes
+# after login holds the fetch, its lock and the spinner forever.
+fetch_timeout="${SSHL_FETCH_TIMEOUT_OVERRIDE:-120}"
 
 spinner_frame() {
     local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
@@ -156,16 +159,59 @@ parse_remote() {
     printf '%s\n' "$entry"
 }
 
+# Names why ssh gave no data, from its exit status and stderr, as one of
+# the words failure_text knows. Nothing when ssh itself succeeded.
+failure_reason() {
+    local rc="$1" err="$2"
+    case "$rc" in
+        0) return 0 ;;
+        124) printf 'timeout'; return 0 ;;
+    esac
+    case "$err" in
+        *"Host key verification failed"*|*"HOST IDENTIFICATION HAS CHANGED"*) printf 'hostkey' ;;
+        *"Permission denied"*|*"Too many authentication failures"*) printf 'auth' ;;
+        *"Connection timed out"*|*"No route to host"*|*"Connection refused"*|\
+        *"Network is unreachable"*|*"Could not resolve hostname"*) printf 'unreachable' ;;
+        # At LogLevel=ERROR ssh says nothing when its keepalives give up.
+        *"not responding"*) printf 'timeout' ;;
+        *[![:space:]]*) printf 'failed' ;;
+        *) if [[ "$rc" == 255 ]]; then printf 'timeout'; else printf 'failed'; fi ;;
+    esac
+}
+
+# The cache is untrusted, so only these words become status text.
+failure_text() {
+    case "$1" in
+        timeout)     printf 'no answer' ;;
+        hostkey)     printf 'host key changed' ;;
+        auth)        printf 'login refused' ;;
+        unreachable) printf 'unreachable' ;;
+        failed)      printf 'ssh failed' ;;
+    esac
+}
+
 fetch() {
-    local out tmp
+    local out tmp errf rc=0 reason line
+    errf=$(mktemp "$cache_dir/.err.XXXXXX")
     # 9>&- keeps an ssh ControlPersist master from holding the lock.
-    out=$(ssh -o BatchMode=yes \
+    # ServerAlive notices a host that stops answering within 15s, and
+    # timeout ends a remote command that never finishes.
+    out=$(timeout "$fetch_timeout" ssh -o BatchMode=yes \
               -o ConnectTimeout=2 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=3 \
               -o StrictHostKeyChecking=accept-new \
               -o LogLevel=ERROR \
-              "$user@$ip" "$remote" 2>/dev/null 9>&-) || out=""
+              "$user@$ip" "$remote" 2>"$errf" 9>&-) || { rc=$?; out=""; }
+    reason="$(failure_reason "$rc" "$(head -c 4096 "$errf")")"
+    rm -f "$errf"
+    if [[ -n "$reason" ]]; then
+        line=$'?\t?\t'"$reason"
+    else
+        line="$(parse_remote <<<"$out")"
+    fi
     tmp=$(mktemp "$cache_dir/.tmp.XXXXXX")
-    if ! { parse_remote <<<"$out" > "$tmp" && mv "$tmp" "$cache"; }; then
+    if ! { printf '%s\n' "$line" > "$tmp" && mv "$tmp" "$cache"; }; then
         rm -f "$tmp"
     fi
 }
@@ -174,7 +220,9 @@ fetch() {
 # the fetch. Its output goes to /dev/null so it does not hold tmux's #()
 # pipe open: tmux does not rerun a job whose pipe is still open.
 start_fetch() {
-    : > "$marker"
+    # A forced fetch marks itself, so a caller that finds it killed knows
+    # to put the bar back to 5s.
+    if $force; then echo force > "$marker"; else : > "$marker"; fi
     (
         trap 'rm -f "$marker"; if $force; then "${tmux_cmd[@]}" set -g status-interval 5 9>&- 2>/dev/null || true; fi' EXIT
         fetch
@@ -184,13 +232,15 @@ start_fetch() {
 read_entry() {
     entry_up="?"
     entry_updates="?"
+    entry_reason=""
     entry_ok=false
     [[ -f "$cache" ]] || return 0
-    local up n
-    IFS=$'\t' read -r up n < "$cache" 2>/dev/null || true
+    local up n reason
+    IFS=$'\t' read -r up n reason < "$cache" 2>/dev/null || true
     if valid_field "${up:-}" && valid_field "${n:-}"; then
         entry_up="$(normalize_field "$up")"
         entry_updates="$(normalize_field "$n")"
+        entry_reason="$(failure_text "${reason:-}")"
         entry_ok=true
     fi
 }
@@ -222,7 +272,14 @@ if $need_fetch; then
     fetching=true
 elif [[ -e "$marker" ]]; then
     # A marker with a free lock was left by a fetch that was killed.
-    if flock -n 9; then rm -f "$marker"; else fetching=true; fi
+    if flock -n 9; then
+        if [[ "$(cat "$marker" 2>/dev/null)" == force ]]; then
+            "${tmux_cmd[@]}" set -g status-interval 5 9>&- 2>/dev/null || true
+        fi
+        rm -f "$marker"
+    else
+        fetching=true
+    fi
 fi
 exec 9>&-
 
@@ -234,6 +291,13 @@ fi
 # Uptime and age both derive from cache mtime so they tick every poll.
 age=$(( now - mtime ))
 (( age < 0 )) && age=0
+
+if [[ -n "$entry_reason" ]]; then
+    spin=""
+    if $fetching; then spin=" #[fg=colour208]$(spinner_frame)"; fi
+    printf '#[fg=colour203]%s%s#[fg=colour252] · %s\n' "$entry_reason" "$spin" "$(format_age "$age")"
+    exit 0
+fi
 
 if [[ "$entry_up" == "?" ]]; then
     up_display="?"

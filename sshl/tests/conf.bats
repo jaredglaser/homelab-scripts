@@ -73,9 +73,34 @@ term_hides() {
     wait_until 5 active_pane_is pane_dead 1
     attach_client_in_terminal
     term_keys C-b r
-    wait_until 5 term_shows "respawned the pane, refreshing fake-host-01"
+    wait_until 5 term_shows "respawned the dead panes, refreshing fake-host-01"
     wait_until 5 active_pane_is pane_current_command sleep
     [ "$(active_pane pane_dead)" = "0" ]
+}
+
+@test "dead pane: the pane itself says how to reconnect" {
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 255"
+    wait_until 5 active_pane_is pane_dead 1
+    pane_says_reconnect() {
+        tmux -L "$SOCKET" capture-pane -p -t "=$session_name:.0" | grep -q "^exit 255 .* Ctrl+b r reconnects"
+    }
+    wait_until 5 pane_says_reconnect
+}
+
+@test "prefix r: respawns every dead pane in the window, not only the active one" {
+    local marker="$SSHL_DATA_DIR_OVERRIDE/respawned"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" \
+        "if [ -e '$marker.0' ]; then exec sleep 30; fi; touch '$marker.0'; exit 255"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.1" \
+        "if [ -e '$marker.1' ]; then exec sleep 30; fi; touch '$marker.1'; exit 255"
+    dead_count_is() {
+        [ "$(tmux -L "$SOCKET" list-panes -t "=$session_name:" -F '#{pane_dead}' | grep -c 1)" -eq "$1" ]
+    }
+    wait_until 5 dead_count_is 2
+    attach_client_in_terminal
+    term_keys C-b r
+    wait_until 5 term_shows "respawned the dead panes, refreshing fake-host-01"
+    wait_until 5 dead_count_is 0
 }
 
 @test "pane-died: the message names the window" {
@@ -83,6 +108,14 @@ term_hides() {
     tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 3"
     wait_until 5 term_shows "pane died in fake-host-01. Press <prefix> r to respawn."
     tmux -L "$SOCKET" show-messages | grep -q "pane died in fake-host-01\."
+}
+
+@test "pane-died: an ssh drop refreshes the host info, a clean exit does not" {
+    local info="$XDG_RUNTIME_DIR/sshl-host-info"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:1.0" "exit 0"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:0.0" "exit 255"
+    wait_until 5 test -f "$info/testuser@192.0.2.1"
+    [ ! -e "$info/testuser@192.0.2.2" ]
 }
 
 @test "pane-died: a pane that dies before any client attaches writes nothing into a pane" {
