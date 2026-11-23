@@ -346,3 +346,23 @@ EOF2
         sed -i "/^$key=/d" "$SSHL_DATA_DIR_OVERRIDE/config"
     done
 }
+
+@test "scan_subnet: a subnet nmap cannot read fails and names the config key" {
+    # What nmap 7.94 prints for subnet=lan, and its exit status.
+    stub_cmd nmap 'echo "Starting Nmap 7.94SVN ( https://nmap.org )"
+echo "Failed to resolve \"lan\"." >&2
+echo "WARNING: No targets were specified, so 0 hosts scanned." >&2
+echo "Nmap done: 0 IP addresses (0 hosts up) scanned in 0.03 seconds"'
+    run scan_subnet
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'Failed to resolve "lan".'* ]]
+    [[ "$output" == *"Error: nmap could not read the subnet '$subnet'. Set subnet= in $CONFIG_FILE to a range in CIDR notation, such as 192.168.1.0/24."* ]]
+    [[ "$output" != *"No live hosts found"* ]]
+}
+
+@test "scan_subnet: a netmask nmap rejects fails instead of scanning one host" {
+    stub_cmd nmap 'echo "Illegal netmask in \"10.1.0.0/66\". Assuming /32 (one host)" >&2'
+    run scan_subnet
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Error: nmap could not read the subnet"* ]]
+}
