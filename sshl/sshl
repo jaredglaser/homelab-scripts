@@ -59,6 +59,8 @@ elif ! session_is_healthy; then
         build_session
         built=true
     fi
+else
+    reopen_missing_windows
 fi
 
 # Warm host-info cache so window switches hit a fresh entry. The

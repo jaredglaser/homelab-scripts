@@ -398,12 +398,15 @@ set_session_env() {
 }
 
 # Add a window for a host. With --first, opens the session via
-# new-session (caller must guarantee no session exists yet). Without
-# --first, appends a window to the existing session. Returns 1, with any
-# partial window already killed, when the host gets no usable window.
+# new-session (caller must guarantee no session exists yet). With
+# --before WID, inserts the window before window WID. Otherwise appends a
+# window to the existing session. Returns 1, with any partial window
+# already killed, when the host gets no usable window.
 add_window() {
     local first=false
+    local -a where=(-t "=$session_name:")
     if [[ "${1:-}" == "--first" ]]; then first=true; shift; fi
+    if [[ "${1:-}" == "--before" ]]; then where=(-b -t "$2"); shift 2; fi
     local ip="$1"
 
     local user name left right right_title
@@ -422,7 +425,7 @@ add_window() {
             return 1
         }
     else
-        wid=$("${TMUX_CMD[@]}" new-window -t "=$session_name:" -n "$name" \
+        wid=$("${TMUX_CMD[@]}" new-window "${where[@]}" -n "$name" \
             -P -F '#{window_id}' "$left") || {
             echo "Warning: failed to create window for $ip ($name), skipping" >&2
             return 1
@@ -468,6 +471,37 @@ kill_host_window() {
         return 0
     fi
     "${TMUX_CMD[@]}" kill-window -t "$wid" 2>/dev/null || true
+}
+
+# A host's window closes for good when both of its panes exit with status
+# 0 (exit in the shell, q in htop), while its IP stays in the cache.
+# Reopen such windows in cache order, so a plain sshl run brings them back
+# without the --rebuild that would close every open terminal.
+reopen_missing_windows() {
+    local i j ip next
+    local -a reopened=() not_reopened=()
+    for (( i = 0; i < ${#ips[@]}; i++ )); do
+        ip="${ips[i]}"
+        [[ -z "$(find_window_id_by_ip "$ip")" ]] || continue
+        next=""
+        for (( j = i + 1; j < ${#ips[@]}; j++ )); do
+            next="$(find_window_id_by_ip "${ips[j]}")"
+            [[ -z "$next" ]] || break
+        done
+        if [[ -n "$next" ]]; then
+            add_window --before "$next" "$ip" || { not_reopened+=("$ip"); continue; }
+        else
+            add_window "$ip" || { not_reopened+=("$ip"); continue; }
+        fi
+        reopened+=("$ip")
+    done
+    if (( ${#reopened[@]} > 0 )); then
+        echo "Reopened the window for $(format_host_list "${reopened[@]}")." >&2
+    fi
+    if (( ${#not_reopened[@]} > 0 )); then
+        echo "Could not reopen the window for $(format_host_list "${not_reopened[@]}"). Fix the cause above and run 'sshl --rebuild' to retry." >&2
+    fi
+    return 0
 }
 
 # kill-server, or killing a session's last window, returns before the

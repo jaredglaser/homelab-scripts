@@ -32,8 +32,9 @@ cd sshl
 ./sshl
 
 # After config is set up, the first sshl run scans the subnet and pops a
-# checklist so you pick which hosts become windows. Subsequent runs just
-# attach a new grouped view to the existing session.
+# checklist so you pick which hosts become windows. Subsequent runs
+# attach a new grouped view to the existing session, and reopen the
+# window of any host whose shell and htop both exited.
 ./sshl
 
 # Emergency: nuke the tmux server and rebuild from the cache
@@ -56,7 +57,7 @@ Active inside the tmux session:
 | `<prefix> O` | Reorder popup. Arrow keys or `j`/`k` move the cursor. Press `space` to grab the highlighted host, arrows to move it, `space` again to drop, `enter` to apply, `q`/`esc` to cancel. |
 | `<prefix> I` | Show ignored hosts. Tick to un-ignore (returns them to the next scan as candidates). |
 | `<prefix> H` | Fuzzy host picker, jumps to selected window |
-| `<prefix> r` | Respawn the active pane if it is dead, and force-refresh host info. A live pane keeps running. |
+| `<prefix> r` | Respawn the active pane if it is dead, and force-refresh host info. A live pane keeps running. A pane whose command fails (a dropped connection) stays open as dead. One that exits cleanly (`exit` in the shell, `q` in htop) closes, and when both of a host's panes have closed, its window goes too: run `sshl` again to reopen it. |
 | `↻` (status bar) | Force-refresh host info for the current window |
 | Mouse | Click window tabs to switch hosts |
 
