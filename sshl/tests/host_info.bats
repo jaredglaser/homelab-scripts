@@ -266,6 +266,29 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
 }
 
 
+@test "host-info: a killed forced fetch does not leave the bar at 1 Hz" {
+    start_test_server
+    tmux -L "$SOCKET" set -g status-interval 1
+    mkdir -m 700 "$CACHE_DIR"
+    printf '90000\t3\n' > "$CACHE_DIR/testuser@$IP"
+    echo force > "$CACHE_DIR/testuser@$IP.fetching"
+    run "$HI" testuser "$IP"
+    [ "$output" = "up 1d1h · updates 3 · < 1m" ]
+    status_interval_is 5
+}
+
+
+@test "host-info: a killed plain fetch leaves the status interval alone" {
+    start_test_server
+    tmux -L "$SOCKET" set -g status-interval 1
+    mkdir -m 700 "$CACHE_DIR"
+    printf '90000\t3\n' > "$CACHE_DIR/testuser@$IP"
+    : > "$CACHE_DIR/testuser@$IP.fetching"
+    "$HI" testuser "$IP" > /dev/null
+    status_interval_is 1
+}
+
+
 @test "host-info: the cache lives under XDG_RUNTIME_DIR with mode 700" {
     "$HI" testuser "$IP" > /dev/null
     wait_fetch_done "testuser@$IP"
