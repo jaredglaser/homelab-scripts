@@ -333,3 +333,16 @@ EOF2
     [ "$status" -eq 0 ]
     [ "$output" = '10.0.0.0/24|konsole|--profile|x|ssh -t {user}@{ip} "htop -d 10"|' ]
 }
+
+@test "config: an empty default_user, left_cmd or right_cmd is rejected at load time" {
+    local key
+    for key in default_user left_cmd right_cmd; do
+        sed -i "/^$key=/d" "$SSHL_DATA_DIR_OVERRIDE/config"
+        echo "$key=" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+        load_config 'echo loaded'
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"Error: '$key' in $SSHL_DATA_DIR_OVERRIDE/config is empty."* ]]
+        [[ "$output" != *loaded* ]]
+        sed -i "/^$key=/d" "$SSHL_DATA_DIR_OVERRIDE/config"
+    done
+}

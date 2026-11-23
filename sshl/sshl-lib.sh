@@ -210,6 +210,15 @@ if [[ -z "$subnet" ]]; then
     exit 1
 fi
 
+# An empty command gives a pane that exits at once, and an empty user an
+# ssh to "@ip". Both fail later with messages that do not name the key.
+for key in default_user left_cmd right_cmd; do
+    if [[ -z "${!key}" ]]; then
+        echo "Error: '$key' in $CONFIG_FILE is empty. Give it a value, or remove the line to use the default." >&2
+        exit 1
+    fi
+done
+
 case "$layout" in
     even-horizontal|even-vertical|main-horizontal|main-vertical|tiled) ;;
     *)
