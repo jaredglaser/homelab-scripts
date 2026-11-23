@@ -214,3 +214,51 @@ exec sleep 30'
     run env -u TMUX "$SSHL_SRC/sshl"
     [[ "$output" != *"changed after the session was built"* ]]
 }
+
+# A terminal that records its arguments, one per line, and exits at once.
+install_arg_logger() {
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd "$1" 'printf "%s\n" "$@" > "$SSHL_DATA_DIR_OVERRIDE/term.log"'
+}
+
+@test "sshl: gnome-terminal and xfce4-terminal get the option that takes a command with arguments" {
+    seed_cache
+    local term opt
+    for term in gnome-terminal:-- xfce4-terminal:-x; do
+        opt="${term#*:}" term="${term%%:*}"
+        install_arg_logger "$term"
+        set_config terminal "$term"
+        run env -u TMUX "$SSHL_SRC/sshl"
+        [ "$status" -eq 0 ]
+        [ "$(head -n2 "$SSHL_DATA_DIR_OVERRIDE/term.log" | tr '\n' ' ')" = "$opt tmux " ]
+    done
+}
+
+@test "sshl: a terminal value that ends in the option before the command is used as written" {
+    seed_cache
+    install_arg_logger fake-term
+    set_config terminal "fake-term start --"
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [ "$(head -n3 "$SSHL_DATA_DIR_OVERRIDE/term.log" | tr '\n' ' ')" = "start -- tmux " ]
+}
+
+@test "sshl: a tmux older than the minimum is reported before anything runs" {
+    seed_cache
+    stub_cmd tmux "if [[ \"\$1\" == -V ]]; then echo 'tmux 3.0a'; exit 0; fi
+exec '$REAL_TMUX' \"\$@\""
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Error: tmux 3.2 or newer is required, found 3.0a."* ]]
+    run session_exists
+    [ "$status" -ne 0 ]
+}
+
+@test "sshl: a missing ssh is reported before the session is built" {
+    seed_cache
+    run env -u TMUX PATH="$(path_without ssh)" "$SSHL_SRC/sshl"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Error: 'ssh' is required but not installed"* ]]
+    run session_exists
+    [ "$status" -ne 0 ]
+}

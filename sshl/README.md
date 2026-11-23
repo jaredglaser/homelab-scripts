@@ -4,9 +4,10 @@ Scans your network for machines you can SSH into and opens them all in one tmux 
 
 ## Requirements
 
-- bash 4.4, tmux 3.4 and fzf 0.46.0 or newer
+- bash 4.4, tmux 3.2 and fzf 0.46.0 or newer. Clicking `↻` needs tmux 3.4. On an older tmux, `prefix r` does the same.
 - nmap, an SSH client, `flock` (util-linux), `getent`
-- a terminal emulator that takes `-e command args`. konsole is the default.
+- a terminal emulator. konsole is the default. xterm, alacritty, kitty, tilix, foot, gnome-terminal and xfce4-terminal also work: set `terminal=` in `config`.
+- a UTF-8 locale, or `●` and `↻` show as `_`
 
 Set up SSH keys for your hosts first (`ssh-copy-id user@host`). Otherwise every window asks for a password.
 
@@ -53,12 +54,15 @@ host.192.168.1.10.user=admin
 host.192.168.1.10.name=webserver
 ```
 
+sshl uses your `~/.ssh/config` for entries that match the host's IP, such as `Port` or `ProxyJump`. Two exceptions: the user always comes from `default_user` or `host.<ip>.user`, and the scan only finds hosts listening on port 22.
+
 Changes apply to new windows straight away. Open windows keep their old settings until `./sshl --rebuild`, which closes every sshl window and opens a fresh one. sshl tells you when that is needed.
 
 ## When something goes wrong
 
 - **A host shows up as an IP and asks for a password.** sshl could not log in as `default_user`. Add `host.<ip>.user=` for it, then press `prefix S` to rename it and run `./sshl --rebuild` to log in as that user.
 - **A pane says the host key changed.** The host was reinstalled or its keys regenerated. Check that it is the machine you expect, remove the old key with `ssh-keygen -R <ip>`, then press `prefix r`. sshl accepts the key of a host it has never seen without asking.
+- **The terminal window closes as soon as it opens.** gnome-terminal, xfce4-terminal and tilix hide the error. Run `tmux -L homelab new-session -t '=homelab'` in a terminal you already have open to read it.
 - **To start over with a fresh scan:** run `tmux -L homelab kill-server`, delete `ips.cache`, and run `./sshl`.
 
 ## Tests

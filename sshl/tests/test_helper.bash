@@ -117,6 +117,7 @@ install_tmux_guard() {
     cat > "$STUB_BIN/tmux" << 'EOF'
 #!/usr/bin/env bash
 args=" $* "
+[[ "$args" == " -V " ]] && exec "$REAL_TMUX" -V
 if [[ "$args" == *" -L homelab "* ]]; then
     echo "refused: tmux $*" >> "$TMUX_GUARD_LOG"
     exit 1
@@ -211,4 +212,26 @@ term_keys() {
 # @host_ip of each window in session_name, in index order, space separated.
 live_order() {
     tmux -L "$SOCKET" list-windows -t "=$session_name" -F '#{@host_ip}' | grep . | tr '\n' ' '
+}
+
+# Print PATH without the named command, so a test can run as if it were
+# not installed. Each directory that holds it is dropped, and one directory
+# of links to the rest of their commands takes the place of the first.
+path_without() {
+    local farm="$SSHL_DATA_DIR_OVERRIDE/path-without-$1" new="" placed=false dir f
+    local -a dirs
+    mkdir -p "$farm"
+    IFS=: read -ra dirs <<<"$PATH"
+    for dir in "${dirs[@]}"; do
+        if [[ ! -e "$dir/$1" ]]; then
+            new+="${new:+:}$dir"
+            continue
+        fi
+        for f in "$dir"/*; do
+            [[ "${f##*/}" == "$1" || -e "$farm/${f##*/}" ]] || ln -s "$f" "$farm/${f##*/}"
+        done
+        $placed || new+="${new:+:}$farm"
+        placed=true
+    done
+    printf '%s' "$new"
 }
