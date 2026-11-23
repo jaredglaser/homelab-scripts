@@ -5,8 +5,7 @@ load test_helper
 
 # Run popup-scan.sh in a new tmux window. Returns the pane ID.
 start_popup() {
-    tmux -L "$SOCKET" new-window -P -F '#{pane_id}' \
-        "env SSHL_DATA_DIR_OVERRIDE='$SSHL_DATA_DIR_OVERRIDE' SSHL_SOCKET_OVERRIDE='$SOCKET' PATH='$PATH' bash '$SSHL_SRC/popup-scan.sh'"
+    start_popup_window popup-scan.sh
 }
 
 # Build a session with one host (192.0.2.1) as the baseline for popup tests.
@@ -73,7 +72,7 @@ row_of() {
     wait_for_info "$pane" 1 1
     tmux -L "$SOCKET" send-keys -t "$pane" "Enter"
 
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
     grep -q "192.0.2.2" "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
 }
@@ -94,7 +93,7 @@ row_of() {
     wait_for_info "$pane" 1 1
     tmux -L "$SOCKET" send-keys -t "$pane" "Enter"
 
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(live_order)" = "192.0.2.2 " ]
     run grep "192.0.2.1" "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     [ "$status" -ne 0 ]
@@ -110,7 +109,7 @@ row_of() {
     wait_for_info "$pane" 2 0
     tmux -L "$SOCKET" send-keys -t "$pane" "Escape"
 
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = "$before" ]
     [ "$(live_order)" = "192.0.2.1 " ]
 }
@@ -129,8 +128,8 @@ row_of() {
     wait_for_info "$pane" 2 1
     tmux -L "$SOCKET" send-keys -t "$pane" "Enter"
 
-    # The refusal exits non-zero, so remain-on-exit keeps the pane and its message.
-    wait_for_pane_dead "$pane"
+    # The refusal exits non-zero, and its message stays in the pane.
+    wait_for_popup_exit "$pane" 1
     wait_for_pane_content "$pane" "Refusing: would leave zero hosts"
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = "$before" ]
     [ "$(live_order)" = "192.0.2.1 " ]
@@ -151,7 +150,7 @@ row_of() {
     wait_for_info "$pane" 2 2
     tmux -L "$SOCKET" send-keys -t "$pane" "Enter"
 
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(cut -f1 "$SSHL_DATA_DIR_OVERRIDE/ips.cache" | tr '\n' ' ')" = "192.0.2.2 " ]
     [ "$(live_order)" = "192.0.2.2 " ]
 }
@@ -170,7 +169,7 @@ row_of() {
     # The cursor now rests on the NEW row, which a bare accept would add.
     tmux -L "$SOCKET" send-keys -t "$pane" "Enter"
 
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = "$before" ]
     [ ! -s "$SSHL_DATA_DIR_OVERRIDE/ignored.cache" ]
     [ "$(live_order)" = "192.0.2.1 " ]
@@ -189,7 +188,7 @@ row_of() {
     wait_for_info "$pane" 2 0
     double_click "$pane" "$(row_of "$pane" 'NEW  ')"
 
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = "$before" ]
     [ "$(live_order)" = "192.0.2.1 " ]
 }
@@ -204,7 +203,7 @@ row_of() {
     wait_for_info "$pane" 2 1
     double_click "$pane" "$(row_of "$pane" 'NEW  ')"
 
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
 }
 

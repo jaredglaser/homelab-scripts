@@ -12,8 +12,7 @@ start_popup() {
     printf '192.0.2.1\tfake-host-01\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     build_session
-    tmux -L "$SOCKET" new-window -P -F '#{pane_id}' \
-        "env SSHL_DATA_DIR_OVERRIDE='$SSHL_DATA_DIR_OVERRIDE' SSHL_SOCKET_OVERRIDE='$SOCKET' PATH='$PATH' bash '$SSHL_SRC/popup-ignored.sh'"
+    start_popup_window popup-ignored.sh
 }
 
 wait_for_info() {
@@ -28,7 +27,7 @@ wait_for_info() {
     tmux -L "$SOCKET" send-keys -t "$pane" Down " "
     wait_for_info "$pane" 2 1
     tmux -L "$SOCKET" send-keys -t "$pane" Enter
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ignored.cache")" = $'192.0.2.8\told-a' ]
 }
 
@@ -42,7 +41,7 @@ wait_for_info() {
     tmux -L "$SOCKET" send-keys -t "$pane" Up " "
     wait_for_info "$pane" 2 0
     tmux -L "$SOCKET" send-keys -t "$pane" Enter
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ignored.cache")" = $'192.0.2.8\told-a\n192.0.2.9\told-b' ]
 }
 
@@ -52,7 +51,7 @@ wait_for_info() {
     pane=$(start_popup)
     wait_for_info "$pane" 2 0
     tmux -L "$SOCKET" send-keys -t "$pane" " " Escape
-    wait_for_pane_gone "$pane"
+    wait_for_popup_exit "$pane" 0
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ignored.cache")" = $'192.0.2.8\told-a\n192.0.2.9\told-b' ]
 }
 
