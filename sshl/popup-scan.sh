@@ -175,7 +175,7 @@ apply_scan_diff() {
     refresh_session_options
     echo "Added ${#_to_add[@]}, removed ${#_to_remove[@]}." >&2
     # Brief pause so the message is visible before the popup closes.
-    (( has_session )) && sleep 1.2
+    if (( has_session )); then sleep 1.2; fi
 }
 
 if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then popup_scan; fi
