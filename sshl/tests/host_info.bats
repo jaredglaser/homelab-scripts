@@ -313,7 +313,7 @@ EOF
     rm -f "$SSH_GATE"
     attach_grouped_client "$SSHL_DIR_OVERRIDE/typescript"
     wait_until 10 grep -q 'clients 1' "$SSHL_DIR_OVERRIDE/typescript"
-    grep -q 'dead 0' "$SSHL_DIR_OVERRIDE/typescript"
+    wait_until 10 grep -q 'dead 0' "$SSHL_DIR_OVERRIDE/typescript"
 
     inv_count_ge() { [ "$(wc -l < "$inv")" -ge "$1" ]; }
     wait_until 10 inv_count_ge 4
