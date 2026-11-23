@@ -101,8 +101,8 @@ apply_scan_diff() {
     # explicitly.
     local final_count=$(( ${#ips[@]} - ${#_to_remove[@]} + ${#_to_add[@]} ))
     if (( final_count <= 0 )); then
-        echo "Refusing: would leave zero hosts (session would self-destruct)." >&2
-        echo "Use 'sshl --rebuild' if you really want to start over." >&2
+        echo "Refusing: that would remove every host, and the session closes with its last window." >&2
+        echo "To start over with a scan, run 'tmux -L $SOCKET kill-server', delete $CACHE_FILE, and run sshl again." >&2
         return 1
     fi
 
