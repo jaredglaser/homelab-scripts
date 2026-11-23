@@ -110,6 +110,14 @@ term_hides() {
     tmux -L "$SOCKET" show-messages | grep -q "pane died in fake-host-01\."
 }
 
+@test "pane-died: an ssh drop refreshes the host info, a clean exit does not" {
+    local info="$XDG_RUNTIME_DIR/sshl-host-info"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:1.0" "exit 0"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:0.0" "exit 255"
+    wait_until 5 test -f "$info/testuser@192.0.2.1"
+    [ ! -e "$info/testuser@192.0.2.2" ]
+}
+
 @test "pane-died: a pane that dies before any client attaches writes nothing into a pane" {
     tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 3"
     wait_until 5 active_pane_is pane_dead 1
