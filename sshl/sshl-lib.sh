@@ -176,6 +176,15 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     fi
     key="$(trim "${line%%=*}")"
     value="$(trim "${line#*=}")"
+    # Windows are matched to overrides by IP, so host.web01.user would
+    # never apply.
+    if [[ "$key" =~ ^host\.(.+)\.(user|name|left_cmd|right_cmd)$ ]]; then
+        host_key="${BASH_REMATCH[2]}"
+        if [[ ! "${BASH_REMATCH[1]}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            echo "Warning: line $lineno of $CONFIG_FILE: per-host keys take the host's IP, as in host.192.168.1.10.$host_key, ignoring $key." >&2
+            continue
+        fi
+    fi
     case "$key" in
         subnet)        subnet="$value" ;;
         session_name)  session_name="$value" ;;
@@ -188,7 +197,7 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         host.*.name)       ip="${key#host.}"; host_name["${ip%.name}"]="$value" ;;
         host.*.left_cmd)   ip="${key#host.}"; host_left_cmd["${ip%.left_cmd}"]="$value" ;;
         host.*.right_cmd)  ip="${key#host.}"; host_right_cmd["${ip%.right_cmd}"]="$value" ;;
-        *) echo "Warning: unknown config key '$key'" >&2 ;;
+        *) echo "Warning: line $lineno of $CONFIG_FILE has an unknown key '$key', ignoring it." >&2 ;;
     esac
 done < "$CONFIG_FILE"
 
