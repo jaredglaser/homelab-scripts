@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
-# Fake curl for tests, linked in by with_stub. Serves FAKE_CURL_SRC to the -o
-# file and records the arguments in FAKE_CURL_ARGS. An empty FAKE_CURL_SRC
-# fails like an HTTP 404 under -f.
+# Fake curl for install.sh, linked in by with_stub. Records its arguments in
+# FAKE_CURL_ARGS and writes FAKE_CURL_SRC to the -o file. FAKE_CURL_SRC=404
+# answers as raw.githubusercontent.com does for a missing file: with -f,
+# exit 22 and write nothing, without it, write "404: Not Found" and exit 0.
 printf '%s\n' "$@" > "${FAKE_CURL_ARGS:-/dev/null}"
-out=""
+out="" fail=0
 while [ $# -gt 0 ]; do
-    [ "$1" = -o ] && { out="$2"; shift; }
+    case "$1" in
+        -o) out="$2"; shift ;;
+        --fail) fail=1 ;;
+        --*) ;;
+        -*f*) fail=1 ;;
+    esac
     shift
 done
-if [ -z "${FAKE_CURL_SRC:-}" ]; then
-    echo "curl: (22) The requested URL returned error: 404" >&2
-    exit 22
+if [ "${FAKE_CURL_SRC:?}" = 404 ]; then
+    if [ "$fail" = 1 ]; then
+        echo "curl: (22) The requested URL returned error: 404" >&2
+        exit 22
+    fi
+    printf '404: Not Found' > "$out"
+    exit 0
 fi
 cat "$FAKE_CURL_SRC" > "$out"

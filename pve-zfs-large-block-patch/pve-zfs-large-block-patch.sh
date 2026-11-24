@@ -14,13 +14,13 @@
 #
 # The hook discards the exit code, so failures go to syslog (daemon.err) under
 # the tag pve-zfs-L-patch, and each re-patch goes there at daemon.notice.
+#
+# --root DIR works on the same paths under DIR instead of /. The test suite
+# uses it. The hook passes no arguments.
 
 set -u
 export LC_ALL=C
 
-DEFAULT_FILE="/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm"
-DEFAULT_BACKUP_DIR="/var/backups/pve-zfs-L-patch"
-HOOK_FILE="/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch"
 PKG="libpve-storage-perl"
 TAG="pve-zfs-L-patch"
 SELF="$0"
@@ -32,20 +32,6 @@ else
 fi
 
 prefix="${BOLD}[${TAG}]${RESET}"
-
-# A root shell left with an override exported from a manual test would
-# otherwise patch the temp copy during apt upgrade and leave the real file alone.
-if [ "${PVE_ZFS_PATCH_TESTING:-}" = 1 ]; then
-    FILE="${PVE_ZFS_PATCH_FILE_OVERRIDE:-$DEFAULT_FILE}"
-    BACKUP_DIR="${PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE:-$DEFAULT_BACKUP_DIR}"
-    echo "${prefix} ${YELLOW}TEST MODE${RESET} - PVE_ZFS_PATCH_TESTING=1, using $FILE and $BACKUP_DIR" >&2
-else
-    FILE="$DEFAULT_FILE"
-    BACKUP_DIR="$DEFAULT_BACKUP_DIR"
-    if [ -n "${PVE_ZFS_PATCH_FILE_OVERRIDE:-}${PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE:-}" ]; then
-        echo "${prefix} ${YELLOW}NOTE${RESET} - ignoring PVE_ZFS_PATCH_FILE_OVERRIDE and PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE because PVE_ZFS_PATCH_TESTING is not 1, using $FILE and $BACKUP_DIR" >&2
-    fi
-fi
 
 # Only the first message line reaches syslog.
 report_and_exit() {
@@ -68,12 +54,8 @@ require() {
     done
 }
 
-# Filled in once sed has rewritten the file, so a later read error names the
-# backup to restore.
-restore_hint=()
-
 read_fail() {
-    fail "cannot read $FILE (grep exit $1). Check permissions and disk health." "${restore_hint[@]}"
+    fail "cannot read $FILE (grep exit $1). Check permissions and disk health."
 }
 
 COMMENT_RE='^[[:space:]]*#'
@@ -91,77 +73,30 @@ has_pattern() {
     return 1
 }
 
-# A call site is 'zfs', 'send' as a Perl list (either quote style, any spacing),
-# or a quoted string that starts with zfs send followed by whitespace and an
-# argument starting with -, $ or @, or by the closing quote. That keeps message
-# text such as "zfs send failed" out. Whole-line # comments are skipped. Its
-# flag words are the -xyz words after it on the same line, up to the next call
-# site. A site passes when one of them contains L, or --large-block follows it.
-# A site whose flags are on a later line has none on its own line, so it fails.
-SITE_RE="['\"]zfs(['\"][[:space:]]*,[[:space:]]*['\"]send['\"]|[[:space:]]+send([[:space:]]+[-\$@]|['\"]))"
-L_FLAG_RE='(^|[^A-Za-z0-9_-])-[A-Za-z]*L[A-Za-z]*([^A-Za-z0-9_-]|$)'
+ROOT=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --root)
+            [ -n "${2:-}" ] || fail "--root needs a directory."
+            ROOT="$2"; shift 2 ;;
+        *) fail "unknown argument: $1" "Run it with no arguments." ;;
+    esac
+done
 
-# Prints "line N: <code>" for each call site without -L. Exits via fail on a
-# read error.
-sites_without_l() {
-    local sites rc entry lineno rest seg match
-    sites=$(grep -nE -- "$SITE_RE" "$FILE"); rc=$?
-    [ "$rc" -le 1 ] || read_fail "$rc"
-    [ "$rc" -eq 1 ] && return 0
-    while IFS= read -r entry; do
-        lineno="${entry%%:*}"
-        rest="${entry#*:}"
-        [[ $rest =~ $COMMENT_RE ]] && continue
-        while [[ $rest =~ $SITE_RE ]]; do
-            match="${BASH_REMATCH[0]}"
-            rest="${rest#*"$match"}"
-            # The string form consumes the first character of the next word.
-            case "${match: -1}" in [-\$@]) rest="${match: -1}$rest" ;; esac
-            seg="$rest"
-            [[ $seg =~ $SITE_RE ]] && seg="${seg%%"${BASH_REMATCH[0]}"*}"
-            if ! [[ $seg =~ $L_FLAG_RE ]] && [[ $seg != *--large-block* ]]; then
-                entry="${entry#*:}"
-                echo "line $lineno: ${entry#"${entry%%[![:space:]]*}"}"
-                break
-            fi
-        done
-    done <<< "$sites"
-}
+FILE="$ROOT/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm"
+BACKUP_DIR="$ROOT/var/backups/pve-zfs-L-patch"
+HOOK_FILE="$ROOT/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch"
 
-# Runs on the already-patched path and after a rewrite, so an unreviewed send
-# call cannot hide behind a successful patch of the known one.
-check_all_sites() {
-    local bad first
-    bad=$(sites_without_l) || exit 1
-    [ -z "$bad" ] && return 0
-    first="${bad%%$'\n'*}"
-    local -a lines=()
-    mapfile -t lines <<< "$bad"
-    warn "$FILE still has a zfs send call without -L (${first%%:*})." \
-         "${lines[@]}" \
-         "$@" \
-         "Upstream code may have changed. Manual review required." \
-         "Replication for >128K recordsize datasets may be broken."
-}
+require grep sed cp cmp mkdir rm stat date dpkg-query
 
-require grep sed cp cmp mkdir rm stat date mktemp dpkg-query
-
-# Capture stdout alone: dpkg prints warnings about unrelated packages on
-# stderr with exit 0, and those must not be read as this package's state.
-# A full /tmp is no reason to leave the file unpatched, so without a temp
-# file dpkg-query's stderr goes straight to the terminal instead.
-if pkg_err_file=$(mktemp 2>/dev/null); then
-    trap 'rm -f "$pkg_err_file"' EXIT
-    pkg_state=$(dpkg-query -W -f='${db:Status-Status}\n' "$PKG" 2>"$pkg_err_file"); pkg_rc=$?
-    pkg_err=$(<"$pkg_err_file")
-else
-    pkg_state=$(dpkg-query -W -f='${db:Status-Status}\n' "$PKG"); pkg_rc=$?
-    pkg_err="see the dpkg-query output above"
-fi
+# Only stdout is read: dpkg prints warnings about unrelated packages on stderr with
+# exit 0, and those must not be read as this package's state.
+pkg_state=$(dpkg-query -W -f='${db:Status-Status}\n' "$PKG" 2>/dev/null); pkg_rc=$?
 
 case "$pkg_rc" in
     0|1) ;;
-    *) fail "cannot determine $PKG status (dpkg-query exit $pkg_rc): ${pkg_err:-no error text}" \
+    *) pkg_err=$(dpkg-query -W -f='${db:Status-Status}\n' "$PKG" 2>&1 >/dev/null)
+       fail "cannot determine $PKG status (dpkg-query exit $pkg_rc): ${pkg_err:-no error text}" \
             "Refusing to guess at an unknown package state." ;;
 esac
 
@@ -223,7 +158,6 @@ fi
 
 if [ "${#sed_args[@]}" -eq 0 ]; then
     if has_pattern "$U_TARGET" || has_pattern "$PLAIN_TARGET"; then
-        check_all_sites
         echo "${prefix} ${GREEN}OK${RESET} - patch already present in $FILE (no changes needed)" >&2
         exit 0
     fi
@@ -264,18 +198,12 @@ else
     fi
 fi
 
-# sed -i writes a temp file and renames it over the path it is given, so a
-# failed run normally leaves the file as it was. --follow-symlinks resolves the
-# symlink first.
+# sed -i writes a temp file and renames it over the target, so a failed run
+# leaves the file as it was. --follow-symlinks resolves the symlink first.
 if ! sed_err=$(sed -i --follow-symlinks "${sed_args[@]}" "$FILE" 2>&1); then
-    if cmp -s "$FILE" "$backup"; then
-        fail "sed could not patch $FILE: ${sed_err:-no error text}" \
-             "$FILE is unchanged, so there is nothing to restore. Check that it is not immutable (lsattr) and that its filesystem is writable."
-    fi
     fail "sed could not patch $FILE: ${sed_err:-no error text}" \
-         "Restore $backup and review manually."
+         "$FILE is unchanged. Check that it is not immutable (lsattr) and that its filesystem is writable."
 fi
-restore_hint=("$FILE was already rewritten. Restore $backup if it is not correct.")
 
 for i in "${!originals[@]}"; do
     if has_pattern "${originals[$i]}" || ! has_pattern "${targets[$i]}"; then
@@ -284,8 +212,8 @@ for i in "${!originals[@]}"; do
     fi
 done
 
-check_all_sites "The known send call was patched (backup: $backup)."
-
 echo "${prefix} ${YELLOW}APPLIED${RESET} - patched $FILE to add -L flag (backup: $backup)" >&2
 logger -p daemon.notice -t "$TAG" -- "patched $FILE to add -L flag (backup: $backup)" 2>/dev/null || true
 exit 0
+# install.sh rejects a download whose last line is not this one.
+# end of pve-zfs-large-block-patch.sh

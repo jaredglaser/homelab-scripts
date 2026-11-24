@@ -4,107 +4,139 @@
 #   curl -fsSL https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch/install.sh | bash
 #   curl -fsSL .../install.sh | bash -s -- --uninstall
 #
-# PVE_ZFS_PATCH_BRANCH picks the branch the patch script is fetched from
-# (default main), so a branch can be tried before it merges.
+# Piped into bash it downloads the patch script from main. Run as a file with
+# pve-zfs-large-block-patch.sh beside it, as in a clone, it installs that copy.
+# --root DIR installs under DIR instead of /, for the test suite.
 
 set -u
+
+NAME=pve-zfs-large-block-patch.sh
+BASE_URL="https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch"
+P="[pve-zfs-L-patch install]"
+TMP_FILES=()
+trap 'rm -f "${TMP_FILES[@]}"' EXIT
+
+die() {
+    echo "$P FAILED - $1" >&2
+    exit 1
+}
+
+# Next to the target, so the final mv is a rename.
+new_tmp() {
+    NEW_TMP=$(mktemp ${2:+--suffix="$2"} "$1.XXXXXX") || return 1
+    TMP_FILES+=("$NEW_TMP")
+}
 
 # Everything runs from main, called on the last line, so a download cut off
 # halfway through runs nothing.
 main() {
-    local repo_url="https://raw.githubusercontent.com/jaredglaser/homelab-scripts"
-    local branch="${PVE_ZFS_PATCH_BRANCH:-main}"
-    local script="/usr/local/sbin/pve-zfs-large-block-patch.sh"
-    local hook="/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch"
-    local backups="/var/backups/pve-zfs-L-patch"
-    local p="[pve-zfs-L-patch install]"
+    local here="$1" root="" action=install
+    shift
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            --uninstall) action=uninstall; shift ;;
+            --root) [ -n "${2:-}" ] || die "--root needs a directory."; root="$2"; shift 2 ;;
+            *) die "unknown argument: $1 (the only option is --uninstall)" ;;
+        esac
+    done
 
-    # Same rule as the patch script: overrides only count in test mode.
-    if [ "${PVE_ZFS_PATCH_TESTING:-}" = 1 ]; then
-        script="${PVE_ZFS_PATCH_SCRIPT_OVERRIDE:-$script}"
-        hook="${PVE_ZFS_PATCH_HOOK_OVERRIDE:-$hook}"
-        echo "$p TEST MODE - using $script and $hook" >&2
+    local script="$root/usr/local/sbin/$NAME"
+    local hook="$root/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch"
+    local backups="$root/var/backups/pve-zfs-L-patch"
+
+    if [ -z "$root" ] && [ "$(id -u)" != 0 ]; then
+        die "must run as root. Use: curl -fsSL $BASE_URL/install.sh | sudo bash"
     fi
 
-    if [ "$(id -u)" != 0 ]; then
-        echo "$p FAILED - must run as root. Use: curl -fsSL $repo_url/$branch/pve-zfs-large-block-patch/install.sh | sudo bash" >&2
-        exit 1
+    if [ "$action" = uninstall ]; then
+        uninstall "$script" "$hook" "$backups"
+        exit $?
     fi
 
-    case "${1:-}" in
-        "") ;;
-        --uninstall) uninstall; exit $? ;;
-        *) echo "$p FAILED - unknown argument: $1 (the only option is --uninstall)" >&2; exit 1 ;;
-    esac
-
-    command -v curl >/dev/null 2>&1 || { echo "$p FAILED - curl not found." >&2; exit 1; }
-
-    local url="$repo_url/$branch/pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh"
-    local tmp
-    mkdir -p "$(dirname "$script")" "$(dirname "$hook")" || exit 1
-    # Download next to the target so the final mv is a rename.
-    tmp=$(mktemp "$script.XXXXXX") || { echo "$p FAILED - cannot write to $(dirname "$script")." >&2; exit 1; }
-    trap 'rm -f "$tmp"' EXIT
-    if ! curl -fsSL -o "$tmp" "$url"; then
-        echo "$p FAILED - could not download $url" >&2
-        exit 1
+    local local_copy="" from
+    [ -n "$here" ] && [ -f "$here/$NAME" ] && local_copy="$here/$NAME"
+    if [ -z "$local_copy" ]; then
+        command -v curl >/dev/null 2>&1 || die "curl not found."
     fi
-    if [ "$(head -c 11 "$tmp")" != '#!/bin/bash' ] || ! bash -n "$tmp" 2>/dev/null; then
-        echo "$p FAILED - $url is not a complete bash script. Nothing was changed." >&2
-        exit 1
+
+    mkdir -p "$(dirname "$script")" "$(dirname "$hook")" || die "cannot create $(dirname "$script") or $(dirname "$hook")."
+    local tmp="" src
+    if [ -n "$local_copy" ]; then
+        from="$local_copy"
+        src="$local_copy"
+    else
+        from="$BASE_URL/$NAME"
+        new_tmp "$script" || die "cannot write to $(dirname "$script")."
+        tmp="$NEW_TMP"
+        curl -fsSL -o "$tmp" "$from" || die "could not download $from. Nothing was changed."
+        src="$tmp"
     fi
-    chmod 755 "$tmp"
-    if [ -f "$script" ] && cmp -s "$tmp" "$script"; then
-        echo "$p script already up to date: $script" >&2
+    [ "$(tail -n 1 "$src")" = "# end of $NAME" ] || die "$from is not a complete copy of $NAME. Nothing was changed."
+    bash -n "$src" 2>/dev/null || die "$from is not a valid bash script. Nothing was changed."
+    if [ -f "$script" ] && cmp -s "$src" "$script"; then
+        echo "$P script already up to date: $script" >&2
     else
         local verb=installed
         [ -e "$script" ] && verb=updated
-        mv -f "$tmp" "$script" || { echo "$p FAILED - cannot write $script." >&2; exit 1; }
-        echo "$p script $verb from $branch: $script" >&2
+        if [ -z "$tmp" ]; then
+            new_tmp "$script" || die "cannot write to $(dirname "$script")."
+            tmp="$NEW_TMP"
+            cp "$src" "$tmp" || die "cannot write $script."
+        fi
+        { chmod 755 "$tmp" && mv -f "$tmp" "$script"; } || die "cannot write $script."
+        echo "$P script $verb from $from: $script" >&2
     fi
 
     local want
     want=$(hook_text "$script")
     if [ -f "$hook" ] && [ "$(cat "$hook")" = "$want" ]; then
-        echo "$p apt hook already in place: $hook" >&2
+        echo "$P apt hook already in place: $hook" >&2
     else
         local verb=written
         [ -e "$hook" ] && verb=replaced
-        printf '%s\n' "$want" > "$hook" || { echo "$p FAILED - cannot write $hook." >&2; exit 1; }
-        echo "$p apt hook $verb: $hook" >&2
+        # apt reads every file here on each run but skips names ending in
+        # .dpkg-tmp, so a write that fails partway never becomes a hook.
+        new_tmp "$hook" .dpkg-tmp || die "cannot write to $(dirname "$hook")."
+        { printf '%s\n' "$want" > "$NEW_TMP" && chmod 644 "$NEW_TMP" && mv -f "$NEW_TMP" "$hook"; } \
+            || die "cannot write $hook. The previous hook, if any, is unchanged."
+        echo "$P apt hook $verb: $hook" >&2
     fi
 
-    echo "$p running $script once now" >&2
-    # stdin is this script when piped from curl, so the child must not read it.
-    "$script" < /dev/null
+    echo "$P running $script once now" >&2
+    if [ -n "$root" ]; then
+        "$script" --root "$root"
+    else
+        "$script"
+    fi
     exit $?
 }
 
 hook_text() {
     cat <<EOF
 DPkg::Post-Invoke {
-    "$1 || [ \$? -lt 126 ] || logger -p daemon.err -t pve-zfs-L-patch -- '$1 could not run, so the -L patch was not checked. Run the installer again.'; true";
+    "$1 || case \$? in 126|127) logger -p daemon.err -t pve-zfs-L-patch -- '$1 could not run, so the -L patch was not checked. Run the installer again.' ;; esac; true";
 };
 EOF
 }
 
 uninstall() {
-    local removed=0
+    local script="$1" hook="$2" backups="$3" removed=0
     # Hook first, so no apt run can start a half-removed install.
     if [ -e "$hook" ]; then
-        rm -f "$hook" || { echo "$p FAILED - cannot remove $hook." >&2; return 1; }
-        echo "$p removed $hook" >&2; removed=1
+        rm -f "$hook" || { echo "$P FAILED - cannot remove $hook." >&2; return 1; }
+        echo "$P removed $hook" >&2; removed=1
     fi
     if [ -e "$script" ]; then
-        rm -f "$script" || { echo "$p FAILED - cannot remove $script." >&2; return 1; }
-        echo "$p removed $script" >&2; removed=1
+        rm -f "$script" || { echo "$P FAILED - cannot remove $script." >&2; return 1; }
+        echo "$P removed $script" >&2; removed=1
     fi
-    [ "$removed" = 1 ] || echo "$p nothing to remove: neither $hook nor $script exists" >&2
-    echo "$p ZFSPoolPlugin.pm keeps the -L patch until libpve-storage-perl is next updated. To restore the upstream file now:" >&2
+    [ "$removed" = 1 ] || echo "$P nothing to remove: neither $hook nor $script exists" >&2
+    echo "$P ZFSPoolPlugin.pm keeps the -L patch until libpve-storage-perl is next updated. To restore the upstream file now:" >&2
     # shellcheck disable=SC2016 # printed for the operator to run
-    echo "$p   apt-get install --reinstall \"libpve-storage-perl=\$(dpkg-query -W -f='\${Version}' libpve-storage-perl)\"" >&2
-    echo "$p Backups of the unpatched file are in $backups" >&2
+    echo "$P   apt-get install --reinstall \"libpve-storage-perl=\$(dpkg-query -W -f='\${Version}' libpve-storage-perl)\"" >&2
+    echo "$P Backups of the unpatched file are in $backups" >&2
     return 0
 }
 
-main "$@"
+# BASH_SOURCE is empty when bash reads the script from a pipe.
+main "$(if [ "${#BASH_SOURCE[@]}" -gt 0 ]; then dirname "${BASH_SOURCE[0]}"; fi)" "$@"

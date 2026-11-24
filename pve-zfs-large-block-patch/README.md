@@ -23,7 +23,7 @@ Run as root on each Proxmox node:
 curl -fsSL https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch/install.sh | bash
 ```
 
-This installs the script to `/usr/local/sbin/pve-zfs-large-block-patch.sh`, adds the apt hook `/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch`, and patches the file once. Run it again to update the script.
+This installs the script to `/usr/local/sbin/pve-zfs-large-block-patch.sh`, adds the apt hook `/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch`, and patches the file once. Run it again to update. It also replaces a script and hook set up by hand.
 
 <details>
 <summary>Manual install</summary>
@@ -35,7 +35,7 @@ chmod +x /usr/local/sbin/pve-zfs-large-block-patch.sh
 
 cat > /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch <<'EOF'
 DPkg::Post-Invoke {
-    "/usr/local/sbin/pve-zfs-large-block-patch.sh || [ $? -lt 126 ] || logger -p daemon.err -t pve-zfs-L-patch -- '/usr/local/sbin/pve-zfs-large-block-patch.sh could not run, so the -L patch was not checked. Run the installer again.'; true";
+    "/usr/local/sbin/pve-zfs-large-block-patch.sh || case $? in 126|127) logger -p daemon.err -t pve-zfs-L-patch -- '/usr/local/sbin/pve-zfs-large-block-patch.sh could not run, so the -L patch was not checked. Run the installer again.' ;; esac; true";
 };
 EOF
 
@@ -79,7 +79,7 @@ The hook only runs from apt. After `dpkg -i`, run the script by hand, or let the
 | `OK` | Already patched. | Nothing. |
 | `APPLIED` | Patched now, backup named in the message. | Nothing. |
 | `NOT INSTALLED` | No `libpve-storage-perl` and no file. | If this node no longer runs Proxmox VE, uninstall. |
-| `WARNING` | Upstream changed the file in a way the script does not know. It changes nothing, or patches the known call and lists the other send call it found without `-L`. | Replication of large-record datasets may be broken. Check this repository for an updated script before editing the file by hand. |
+| `WARNING` | Upstream changed the file in a way the script does not know. It changes nothing. | Replication of large-record datasets may be broken. Check this repository for an updated script before editing the file by hand. |
 | `FAILED` | Something stopped the patch: the message gives the cause, such as a full disk or a read-only file. | Fix the cause and run the script again. The file is unchanged unless the message names a backup to restore. |
 
 `WARNING` and `FAILED` exit 1 and are logged at `daemon.err`. apt still succeeds, so check the log after updates.
@@ -116,4 +116,4 @@ rm -r /var/backups/pve-zfs-L-patch   # optional, once you no longer need the bac
 
 ## Tests
 
-From the repo root: `bats pve-zfs-large-block-patch/tests/`. See [tests/README.md](tests/README.md).
+See [tests/README.md](tests/README.md).

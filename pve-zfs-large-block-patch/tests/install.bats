@@ -2,131 +2,230 @@
 
 load test_helper
 
+URL="https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh"
+
 setup() {
     common_setup
     INSTALL="$(cd "$TESTS_DIR/.." && pwd)/install.sh"
-    export PVE_ZFS_PATCH_SCRIPT_OVERRIDE="$PATCH_TMP/sbin/pve-zfs-large-block-patch.sh"
-    export PVE_ZFS_PATCH_HOOK_OVERRIDE="$PATCH_TMP/apt.conf.d/99-pve-zfs-large-block-patch"
+    INSTALLED="$ROOT/usr/local/sbin/pve-zfs-large-block-patch.sh"
+    HOOK="$ROOT/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch"
     export FAKE_CURL_SRC="$SCRIPT"
     export FAKE_CURL_ARGS="$PATCH_TMP/curl.args"
-    INSTALLED="$PVE_ZFS_PATCH_SCRIPT_OVERRIDE"
-    HOOK="$PVE_ZFS_PATCH_HOOK_OVERRIDE"
     with_stub curl
-    with_stub id
     seed u.pm
 }
 
-expected_hook() {
-    printf 'DPkg::Post-Invoke {\n    "%s || [ $? -lt 126 ] || logger -p daemon.err -t pve-zfs-L-patch -- '"'"'%s could not run, so the -L patch was not checked. Run the installer again.'"'"'; true";\n};\n' "$INSTALLED" "$INSTALLED"
+# install.sh run as a file next to the patch script, as in a clone.
+install_file() {
+    run "$INSTALL" --root "$ROOT" "$@"
 }
 
-@test "a fresh install fetches the script from main, writes the hook and patches" {
-    run "$INSTALL"
+# install.sh piped into bash, as the one-liner runs it, so it downloads.
+install_piped() {
+    run bash -c 'bash -s -- --root "$2" < "$1"' _ "$INSTALL" "$ROOT"
+}
+
+expected_hook() {
+    printf 'DPkg::Post-Invoke {\n    "%s || case $? in 126|127) logger -p daemon.err -t pve-zfs-L-patch -- '"'"'%s could not run, so the -L patch was not checked. Run the installer again.'"'"' ;; esac; true";\n};\n' "$INSTALLED" "$INSTALLED"
+}
+
+old_manual_hook() {
+    printf 'DPkg::Post-Invoke {\n    "%s || true";\n};\n' "$INSTALLED"
+}
+
+nothing_installed() {
+    [ ! -e "$INSTALLED" ] && [ ! -e "$HOOK" ] \
+        && [ -z "$(find "$ROOT/usr/local" "$ROOT/etc" -type f 2>/dev/null)" ]
+}
+
+@test "run from a clone it installs the clone's script, writes the hook and patches" {
+    install_file
     [ "$status" -eq 0 ]
-    grep -qx "https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh" "$FAKE_CURL_ARGS"
-    cmp "$SCRIPT" "$INSTALLED"
-    [ -x "$INSTALLED" ]
-    expected_hook | diff - "$HOOK"
-    [[ "$output" == *"script installed from main"* ]]
-    [[ "$output" == *"apt hook written"* ]]
+    [[ "$output" == *"script installed from $SCRIPT: $INSTALLED"* ]]
+    [[ "$output" == *"apt hook written: $HOOK"* ]]
     [[ "$output" == *"APPLIED"* ]]
+    cmp "$SCRIPT" "$INSTALLED"
+    [ "$(stat -c %a "$INSTALLED")" = 755 ]
+    expected_hook | diff - "$HOOK"
+    [ "$(stat -c %a "$HOOK")" = 644 ]
     diff "$FIXTURES/u-patched.pm" "$FILE"
+    [ ! -e "$FAKE_CURL_ARGS" ]
+}
+
+@test "piped into bash it downloads the script from main" {
+    install_piped
+    [ "$status" -eq 0 ]
+    [ "$(sed -n 1p "$FAKE_CURL_ARGS")" = -fsSL ]
+    [ "$(sed -n 2p "$FAKE_CURL_ARGS")" = -o ]
+    [ "$(sed -n 4p "$FAKE_CURL_ARGS")" = "$URL" ]
+    [[ "$output" == *"script installed from $URL: $INSTALLED"* ]]
+    cmp "$SCRIPT" "$INSTALLED"
+    [ "$(stat -c %a "$INSTALLED")" = 755 ]
+    expected_hook | diff - "$HOOK"
+    [[ "$output" == *"APPLIED"* ]]
+    [ "$(find "$ROOT/usr/local/sbin" -type f | wc -l)" -eq 1 ]
 }
 
 @test "the README's manual hook is the one the installer writes" {
-    run "$INSTALL"
+    install_file
     [ "$status" -eq 0 ]
     sed -n '/^DPkg::Post-Invoke {$/,/^};$/p' "$TESTS_DIR/../README.md" \
         | sed "s#/usr/local/sbin/pve-zfs-large-block-patch.sh#$INSTALLED#g" | diff - "$HOOK"
 }
 
-@test "PVE_ZFS_PATCH_BRANCH picks the branch" {
-    PVE_ZFS_PATCH_BRANCH=some/branch run "$INSTALL"
-    [ "$status" -eq 0 ]
-    grep -qx "https://raw.githubusercontent.com/jaredglaser/homelab-scripts/some/branch/pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh" "$FAKE_CURL_ARGS"
-}
-
 @test "a rerun says the script and hook are already in place" {
-    run "$INSTALL"
+    install_file
     [ "$status" -eq 0 ]
-    run "$INSTALL"
+    install_file
     [ "$status" -eq 0 ]
     [[ "$output" == *"script already up to date"* ]]
     [[ "$output" == *"apt hook already in place"* ]]
     [[ "$output" == *"OK - patch already present"* ]]
+    [ "$(find "$ROOT/usr/local/sbin" "$ROOT/etc/apt/apt.conf.d" -type f | wc -l)" -eq 2 ]
 }
 
-@test "a rerun over an older script updates it and keeps a correct hook" {
-    run "$INSTALL"
+@test "a piped rerun with nothing new leaves no download behind" {
+    install_piped
+    install_piped
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"script already up to date"* ]]
+    [ "$(find "$ROOT/usr/local/sbin" -type f | wc -l)" -eq 1 ]
+}
+
+@test "over a manual install it replaces the script and the || true hook" {
+    mkdir -p "$(dirname "$INSTALLED")" "$(dirname "$HOOK")"
     printf '#!/bin/bash\necho old\n' > "$INSTALLED"
-    run "$INSTALL"
+    chmod 755 "$INSTALLED"
+    old_manual_hook > "$HOOK"
+    install_file
     [ "$status" -eq 0 ]
-    [[ "$output" == *"script updated from main"* ]]
-    [[ "$output" == *"apt hook already in place"* ]]
+    [[ "$output" == *"script updated from $SCRIPT"* ]]
+    [[ "$output" == *"apt hook replaced: $HOOK"* ]]
     cmp "$SCRIPT" "$INSTALLED"
-}
-
-@test "a hook that differs is replaced and says so" {
-    mkdir -p "$(dirname "$HOOK")"
-    expected_hook | sed 's/^/# /' > "$HOOK"
-    run "$INSTALL"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"apt hook replaced"* ]]
     expected_hook | diff - "$HOOK"
+    [[ "$output" == *"APPLIED"* ]]
 }
 
 @test "the patch script's exit status and output pass through" {
     seed plain.pm
     sed -i "s/'-Rpv'/'-Rpvw'/" "$FILE"
-    run "$INSTALL"
+    install_file
     [ "$status" -eq 1 ]
     [[ "$output" == *"WARNING"*"does not contain expected pattern"* ]]
 }
 
 @test "refuses when not root and changes nothing" {
-    FAKE_UID=1000 run "$INSTALL"
+    run "$INSTALL"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED - must run as root. Use: curl -fsSL https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch/install.sh | sudo bash"* ]]
+    [ ! -e "$FAKE_CURL_ARGS" ]
+}
+
+@test "--uninstall refuses when not root" {
+    run "$INSTALL" --uninstall
     [ "$status" -eq 1 ]
     [[ "$output" == *"FAILED - must run as root"* ]]
-    [ ! -e "$INSTALLED" ]
-    [ ! -e "$HOOK" ]
+    [[ "$output" != *"removed"* ]]
+}
+
+@test "a 404 from GitHub installs nothing and says the download failed" {
+    FAKE_CURL_SRC=404 install_piped
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED - could not download $URL. Nothing was changed."* ]]
+    nothing_installed
     diff "$FIXTURES/u.pm" "$FILE"
 }
 
-@test "a failed download changes nothing" {
-    run "$INSTALL"
-    cp "$INSTALLED" "$PATCH_TMP/before"
-    FAKE_CURL_SRC="" run "$INSTALL"
+@test "a 404 body served with success installs nothing" {
+    printf '404: Not Found' > "$PATCH_TMP/body"
+    FAKE_CURL_SRC="$PATCH_TMP/body" install_piped
     [ "$status" -eq 1 ]
-    [[ "$output" == *"FAILED - could not download"* ]]
-    cmp "$PATCH_TMP/before" "$INSTALLED"
-    [ "$(find "$(dirname "$INSTALLED")" -type f | wc -l)" -eq 1 ]
+    [[ "$output" == *"FAILED - $URL is not a complete copy of pve-zfs-large-block-patch.sh. Nothing was changed."* ]]
+    nothing_installed
 }
 
-@test "a download that is not a complete bash script is not installed" {
-    head -c 2000 "$SCRIPT" > "$PATCH_TMP/truncated"
-    FAKE_CURL_SRC="$PATCH_TMP/truncated" run "$INSTALL"
+@test "a download cut short at any line installs nothing" {
+    local lines n
+    lines=$(wc -l < "$SCRIPT")
+    for n in 1 100 146 $((lines - 1)); do
+        head -n "$n" "$SCRIPT" > "$PATCH_TMP/cut"
+        FAKE_CURL_SRC="$PATCH_TMP/cut" install_piped
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"is not a complete copy"* ]]
+        nothing_installed
+    done
+}
+
+@test "a download that ends right but does not parse installs nothing" {
+    printf '#!/bin/bash\nif then\n# end of pve-zfs-large-block-patch.sh\n' > "$PATCH_TMP/bad"
+    FAKE_CURL_SRC="$PATCH_TMP/bad" install_piped
     [ "$status" -eq 1 ]
-    [[ "$output" == *"not a complete bash script"* ]]
-    [ ! -e "$INSTALLED" ]
-    [ ! -e "$HOOK" ]
-    printf '<html>404</html>\n' > "$PATCH_TMP/html"
-    FAKE_CURL_SRC="$PATCH_TMP/html" run "$INSTALL"
+    [[ "$output" == *"FAILED - $URL is not a valid bash script. Nothing was changed."* ]]
+    nothing_installed
+}
+
+@test "a failed download keeps the installed script" {
+    install_file
+    printf '#!/bin/bash\necho old\n' > "$INSTALLED"
+    cp "$INSTALLED" "$PATCH_TMP/before"
+    FAKE_CURL_SRC=404 install_piped
     [ "$status" -eq 1 ]
-    [ ! -e "$INSTALLED" ]
+    cmp "$PATCH_TMP/before" "$INSTALLED"
+    [ "$(find "$ROOT/usr/local/sbin" -type f | wc -l)" -eq 1 ]
+}
+
+@test "a hook write that fails partway leaves the previous hook intact" {
+    install_file
+    old_manual_hook > "$HOOK"
+    # With a file size limit of 0 every write fails with EFBIG after open,
+    # which is what a full disk does to a write in progress.
+    run bash -c 'trap "" XFSZ; ulimit -f 0; "$@"' _ "$INSTALL" --root "$ROOT"
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED - cannot write $HOOK. The previous hook, if any, is unchanged."* ]]
+    old_manual_hook | diff - "$HOOK"
+    [ "$(find "$(dirname "$HOOK")" -type f | wc -l)" -eq 1 ]
+}
+
+@test "the hook logs that the script could not run only when it could not start" {
+    install_file
+    local cmd rc
+    cmd=$(sed -n 's/^    "\(.*\)";$/\1/p' "$HOOK")
+    [ -n "$cmd" ]
+    for rc in 1 126 127 137; do
+        : > "$FAKE_SYSLOG"
+        case "$rc" in
+            1) printf '#!/bin/bash\nexit 1\n' > "$INSTALLED"; chmod 755 "$INSTALLED" ;;
+            126) chmod 644 "$INSTALLED" ;;
+            127) rm -f "$INSTALLED" ;;
+            137) printf '#!/bin/bash\nkill -KILL $$\n' > "$INSTALLED"; chmod 755 "$INSTALLED" ;;
+        esac
+        run sh -c "$cmd"
+        [ "$status" -eq 0 ]
+        if [ "$rc" = 126 ] || [ "$rc" = 127 ]; then
+            printf -- '-p daemon.err -t pve-zfs-L-patch -- %s could not run, so the -L patch was not checked. Run the installer again.\n' "$INSTALLED" | diff - "$FAKE_SYSLOG"
+        else
+            [ ! -s "$FAKE_SYSLOG" ]
+        fi
+    done
 }
 
 @test "an unknown argument is refused" {
-    run "$INSTALL" --remove
+    install_file --remove
     [ "$status" -eq 1 ]
     [[ "$output" == *"unknown argument: --remove"* ]]
-    [ ! -e "$INSTALLED" ]
+    nothing_installed
 }
 
-@test "--uninstall removes the hook and script, keeps the patched file and backups" {
-    run "$INSTALL"
+@test "--root without a directory is refused" {
+    run "$INSTALL" --root
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"FAILED - --root needs a directory."* ]]
+}
+
+@test "--uninstall removes the hook and then the script, keeps the patched file and backups" {
+    install_file
     [ "$status" -eq 0 ]
-    : > "$FAKE_CURL_ARGS"
-    run "$INSTALL" --uninstall
+    install_file --uninstall
     [ "$status" -eq 0 ]
     [ ! -e "$HOOK" ]
     [ ! -e "$INSTALLED" ]
@@ -134,35 +233,12 @@ expected_hook() {
     [ "$(backup_count)" -eq 1 ]
     [[ "$output" == *"removed $HOOK"*"removed $INSTALLED"* ]]
     [[ "$output" == *"apt-get install --reinstall \"libpve-storage-perl=\$(dpkg-query -W -f='\${Version}' libpve-storage-perl)\""* ]]
-    [[ "$output" == *"Backups of the unpatched file are in /var/backups/pve-zfs-L-patch"* ]]
-    [ ! -s "$FAKE_CURL_ARGS" ]
+    [[ "$output" == *"Backups of the unpatched file are in $BACKUPS"* ]]
+    [ ! -e "$FAKE_CURL_ARGS" ]
 }
 
 @test "--uninstall with nothing installed says so and exits 0" {
-    run "$INSTALL" --uninstall
+    install_file --uninstall
     [ "$status" -eq 0 ]
     [[ "$output" == *"nothing to remove"* ]]
-}
-
-@test "--uninstall refuses when not root" {
-    run "$INSTALL"
-    FAKE_UID=1000 run "$INSTALL" --uninstall
-    [ "$status" -eq 1 ]
-    [ -e "$HOOK" ]
-    [ -e "$INSTALLED" ]
-}
-
-@test "the overrides are ignored without PVE_ZFS_PATCH_TESTING=1" {
-    # Not root, so the installer stops before it touches the real paths.
-    FAKE_UID=1000 PVE_ZFS_PATCH_TESTING="" run "$INSTALL"
-    [ "$status" -eq 1 ]
-    [[ "$output" != *"TEST MODE"* ]]
-    [[ "$output" != *"$PATCH_TMP"* ]]
-}
-
-@test "works when piped into bash, as the one-liner runs it" {
-    run bash -c 'bash < "$1"' _ "$INSTALL"
-    [ "$status" -eq 0 ]
-    [[ "$output" == *"APPLIED"* ]]
-    expected_hook | diff - "$HOOK"
 }

@@ -1,4 +1,0 @@
-#!/usr/bin/env bash
-# Fake id for tests, linked in by with_stub, so the root check can be tested
-# both ways whoever runs the suite. Prints FAKE_UID for id -u.
-echo "${FAKE_UID:-0}"
