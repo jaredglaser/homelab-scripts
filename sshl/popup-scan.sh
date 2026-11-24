@@ -70,6 +70,7 @@ popup_scan() {
     trap 'rm -f "$flag"' RETURN
 
     local result
+    # shellcheck disable=SC2016  # SSHL_FLAG is expanded by the shell fzf runs
     result=$(printf '%s\n' "$fzf_input" \
         | SSHL_FLAG="$flag" fzf --multi --reverse --no-sort --height=100% \
               --header="$header" --header-first \
@@ -129,6 +130,7 @@ apply_scan_diff() {
         for c in "${ips[@]}"; do [[ "$c" != "$ip" ]] && new_ips+=("$c"); done
         ips=("${new_ips[@]}")
         ignored_ips+=("$ip")
+        # shellcheck disable=SC2034  # write_ignored reads it through a nameref
         ignored_name["$ip"]="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
         unset 'cached_name[$ip]'
     done

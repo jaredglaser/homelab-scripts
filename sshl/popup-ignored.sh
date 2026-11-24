@@ -35,6 +35,7 @@ popup_ignored() {
     trap 'rm -f "$flag"' RETURN
 
     local result
+    # shellcheck disable=SC2016  # SSHL_FLAG is expanded by the shell fzf runs
     result=$(printf '%s\n' "$fzf_input" \
         | SSHL_FLAG="$flag" fzf --multi --reverse --no-sort --height=100% \
               --header="$header" --header-first \

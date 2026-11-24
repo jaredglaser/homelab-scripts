@@ -1,21 +1,36 @@
 name: Test sshl
 on:
+  # Pushes to a PR branch run through pull_request, which also covers
+  # stacked PRs whose base is not main.
   push:
+    branches: [main]
     paths: ['sshl/**', '.github/workflows/test-sshl.yml']
   pull_request:
     paths: ['sshl/**', '.github/workflows/test-sshl.yml']
 
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install dependencies
-        run: sudo apt-get install -y tmux bats
-      - name: Install fzf
         run: |
-          FZF_VER=0.54.3
-          curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VER}/fzf-${FZF_VER}-linux_amd64.tar.gz" \
-            | sudo tar -xzC /usr/local/bin fzf
+          sudo apt-get update
+          sudo apt-get install -y tmux bats shellcheck
+      - name: Install fzf
+        env:
+          FZF_VER: 0.54.3
+          FZF_SHA256: 6867008c46307f036e48b42ab9bfdc3224657f6a65d70c58a1f456c4d9348cf6
+        run: |
+          curl -fsSLo fzf.tgz "https://github.com/junegunn/fzf/releases/download/v${FZF_VER}/fzf-${FZF_VER}-linux_amd64.tar.gz"
+          echo "${FZF_SHA256}  fzf.tgz" | sha256sum -c -
+          sudo tar -xzf fzf.tgz -C /usr/local/bin fzf
+          rm fzf.tgz
+      - name: Shellcheck
+        run: shellcheck -x sshl/sshl sshl/*.sh sshl/tests/bin/* sshl/tests/test_helper.bash
       - name: Run sshl tests
         run: bats sshl/tests/
