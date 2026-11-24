@@ -99,7 +99,8 @@ ttl=86400
 unknown_ttl=300
 # ConnectTimeout covers only connecting. Without a cap, a host that freezes
 # after login holds the fetch, its lock and the spinner forever.
-fetch_timeout="${SSHL_FETCH_TIMEOUT_OVERRIDE:-120}"
+fetch_timeout="${SSHL_FETCH_TIMEOUT_OVERRIDE:-}"
+[[ "$fetch_timeout" =~ ^[1-9][0-9]{0,5}$ ]] || fetch_timeout=120
 
 spinner_frame() {
     local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
@@ -146,6 +147,7 @@ REMOTE
 # or "?\t?" when there is none or either field fails validation.
 parse_remote() {
     local line tag up n rest entry=$'?\t?'
+    # Bounded first: read is quadratic on a long line (2 MB took 17 s).
     while IFS= read -r line; do
         line="${line%$'\r'}"
         IFS=$'\t' read -r tag up n rest <<<"$line" || true
@@ -155,16 +157,15 @@ parse_remote() {
         else
             entry=$'?\t?'
         fi
-    done
+    done < <(tail -n 20 | cut -b -512)
     printf '%s\n' "$entry"
 }
 
 fetch() {
     local out tmp
     # 9>&- keeps an ssh ControlPersist master from holding the lock.
-    # ServerAlive notices a host that stops answering within 15s, and
-    # timeout ends a remote command that never finishes.
-    out=$(timeout "$fetch_timeout" ssh -o BatchMode=yes \
+    # Keepalives end a silent connection early, timeout one whose command hangs.
+    out=$(timeout -k 5 "$fetch_timeout" ssh -o BatchMode=yes \
               -o ConnectTimeout=2 \
               -o ServerAliveInterval=5 \
               -o ServerAliveCountMax=3 \
@@ -212,6 +213,23 @@ if ! $force && $entry_ok; then
     effective_ttl=$ttl
     [[ "$entry_up" == "?" ]] && effective_ttl=$unknown_ttl
     (( now - mtime < effective_ttl )) && need_fetch=false
+fi
+
+# Without this, a full or read-only cache directory starts an ssh on every
+# status poll, since no attempt is ever recorded.
+cache_writable() {
+    local probe
+    probe=$(mktemp "$cache_dir/.tmp.XXXXXX" 2>/dev/null) || return 1
+    if ! printf 'x\n' 2>/dev/null > "$probe"; then
+        rm -f "$probe"
+        return 1
+    fi
+    rm -f "$probe"
+}
+
+if $need_fetch && ! cache_writable; then
+    echo "host-info: cannot write to $cache_dir"
+    exit 0
 fi
 
 exec 9>>"$lockfile"
