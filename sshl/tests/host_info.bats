@@ -35,7 +35,7 @@ cat "$f"'
 teardown() {
     local refused="" pid
     if [[ -f "${KILL_PIDS:-}" ]]; then
-        while read -r pid; do kill "$pid" 2>/dev/null || true; done < "$KILL_PIDS"
+        while read -r pid; do kill -9 "$pid" 2>/dev/null || true; done < "$KILL_PIDS"
     fi
     [[ -s "${TMUX_GUARD_LOG:-}" ]] && refused="$(cat "$TMUX_GUARD_LOG")"
     # Release any fetch still held by the ssh stub, so teardown need not wait.
@@ -49,7 +49,20 @@ teardown() {
 
 ssh_count() { wc -l < "$SSH_LOG"; }
 ssh_count_is() { [ "$(ssh_count)" -eq "$1" ]; }
-fetch_done() { [ ! -e "$CACHE_DIR/$1.fetching" ] && [ -f "$CACHE_DIR/$1" ]; }
+# The marker goes before the subshell that holds the lock exits.
+fetch_done() {
+    [ ! -e "$CACHE_DIR/$1.fetching" ] && [ -f "$CACHE_DIR/$1" ] &&
+        flock -n "$CACHE_DIR/$1.lock" true
+}
+
+# A skip reads as a pass, so CI fails a test it cannot set up.
+skip_unless_ci() {
+    if [[ -n "${CI:-}" ]]; then
+        echo "cannot run on CI: $1" >&2
+        return 1
+    fi
+    skip "$1"
+}
 wait_fetch_done() { wait_until 10 fetch_done "$1"; }
 
 start_test_server() {
@@ -108,7 +121,7 @@ status_interval_is() {
 }
 
 @test "host-info: banners and malformed tagged lines around the data are skipped" {
-    printf 'Welcome to host\nLast login: yesterday\nSSHL\t90000\t3\nSSHL\t5\t6\textra\nlogout\n' > "$SSH_OUT"
+    printf 'Welcome to host\nSSHL\t1000\t1\nLast login: yesterday\nSSHL\t90000\t3\nSSHL\t5\t6\textra\nlogout\n' > "$SSH_OUT"
     "$HI" testuser "$IP" > /dev/null
     wait_fetch_done "testuser@$IP"
     run "$HI" testuser "$IP"
@@ -197,17 +210,44 @@ exec env -i PATH='$sandbox' /bin/bash -c \"\${*: -1}\""
     stub_cmd ssh 'printf "%s\n" "${*: -2:1}" >> "$SSH_LOG"
 echo "$$" >> "$KILL_PIDS"
 echo "Welcome to host"
+trap "" TERM
 exec sleep 60'
     run "$HI" testuser "$IP"
     [[ "$output" == *"loading…"* ]]
     wait_until 5 ssh_count_is 1
-    wait_until 10 fetch_done "testuser@$IP"
-    wait_until 5 flock -n "$CACHE_DIR/testuser@$IP.lock" true
+    wait_until 15 fetch_done "testuser@$IP"
     run "$HI" testuser "$IP"
     [ "$output" = "up ? · updates ? · < 1m" ]
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd ssh 'printf "%s\n" "${*: -2:1}" >> "$SSH_LOG"; printf "SSHL\t90000\t3\n"'
     run "$HI" -f testuser "$IP"
     wait_until 5 ssh_count_is 2
-    wait_until 10 fetch_done "testuser@$IP"
+    wait_fetch_done "testuser@$IP"
+}
+
+@test "host-info: the fetch time limit is 120s unless the override is a positive number" {
+    local real
+    real="$(command -v timeout)"
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd timeout 'printf "%s\n" "${*:1:4}" >> "$SSHL_DATA_DIR_OVERRIDE/timeout.log"
+exec '"$real"' "$@"'
+    "$HI" testuser 192.0.2.11 > /dev/null
+    wait_fetch_done "testuser@192.0.2.11"
+    SSHL_FETCH_TIMEOUT_OVERRIDE=0 "$HI" testuser 192.0.2.12 > /dev/null
+    wait_fetch_done "testuser@192.0.2.12"
+    SSHL_FETCH_TIMEOUT_OVERRIDE=abc "$HI" testuser 192.0.2.13 > /dev/null
+    wait_fetch_done "testuser@192.0.2.13"
+    SSHL_FETCH_TIMEOUT_OVERRIDE=7 "$HI" testuser 192.0.2.14 > /dev/null
+    wait_fetch_done "testuser@192.0.2.14"
+    [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/timeout.log")" = $'-k 5 120 ssh\n-k 5 120 ssh\n-k 5 120 ssh\n-k 5 7 ssh' ]
+}
+
+@test "host-info: a megabytes-long banner line does not slow the parse" {
+    { head -c 4000000 /dev/zero | tr '\0' x; printf '\nSSHL\t90000\t3\n'; } > "$SSH_OUT"
+    "$HI" testuser "$IP" > /dev/null
+    wait_until 5 fetch_done "testuser@$IP"
+    run "$HI" testuser "$IP"
+    [ "$output" = "up 1d1h · updates 3 · < 1m" ]
 }
 
 @test "host-info: a process ssh leaves behind does not hold the fetch lock" {
@@ -329,12 +369,43 @@ printf "SSHL\t90000\t3\n"'
     mkdir -m 700 "$CACHE_DIR"
     echo keep > "$SSHL_DATA_DIR_OVERRIDE/victim"
     ln -s "$SSHL_DATA_DIR_OVERRIDE/victim" "$CACHE_DIR/testuser@$IP"
+    # A fixed temp name would be just as easy to plant.
+    ln -s "$SSHL_DATA_DIR_OVERRIDE/victim" "$CACHE_DIR/testuser@$IP.tmp"
     "$HI" testuser "$IP" > /dev/null
     wait_fetch_done "testuser@$IP"
     [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/victim")" = "keep" ]
     [ ! -L "$CACHE_DIR/testuser@$IP" ]
     run "$HI" testuser "$IP"
     [ "$output" = "up 1d1h · updates 3 · < 1m" ]
+}
+
+@test "host-info: the cache temp file is made in the cache directory, not TMPDIR" {
+    export TMPDIR="$SSHL_DATA_DIR_OVERRIDE/no-such-dir"
+    "$HI" testuser "$IP" > /dev/null
+    wait_fetch_done "testuser@$IP"
+    run "$HI" testuser "$IP"
+    [ "$output" = "up 1d1h · updates 3 · < 1m" ]
+}
+
+@test "host-info: a cache directory it cannot write is reported and starts no ssh" {
+    mkdir -m 700 "$CACHE_DIR"
+    : > "$CACHE_DIR/testuser@$IP.lock"
+    local as_user=()
+    if (( EUID == 0 )); then
+        command -v setpriv >/dev/null || skip_unless_ci "root needs setpriv to drop the bypass of the read-only bit"
+        as_user=(setpriv --reuid=65534 --regid=65534 --clear-groups)
+        chmod 755 "$SSHL_DATA_DIR_OVERRIDE"
+        : >> "$SSH_OPTS"
+        chmod 666 "$SSH_LOG" "$SSH_OPTS"
+        chown -R 65534 "$XDG_RUNTIME_DIR"
+    fi
+    chmod 500 "$CACHE_DIR"
+    local i
+    for i in 1 2 3; do
+        run "${as_user[@]}" "$HI" testuser "$IP"
+        [ "$output" = "host-info: cannot write to $CACHE_DIR" ]
+    done
+    ssh_count_is 0
 }
 
 @test "host-info: a symlinked cache directory is refused" {
@@ -351,7 +422,7 @@ printf "SSHL\t90000\t3\n"'
     if (( EUID == 0 )); then
         chown 65534 "$CACHE_DIR"
     elif ! sudo -n chown 65534 "$CACHE_DIR" 2>/dev/null; then
-        skip "needs root or passwordless sudo to give the directory away"
+        skip_unless_ci "needs root or passwordless sudo to give the directory away"
     fi
     run "$HI" testuser "$IP"
     [ "$output" = "host-info: $CACHE_DIR is not owned by you" ]
