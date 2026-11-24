@@ -185,7 +185,9 @@ resolve_remote_hostname() {
                -o StrictHostKeyChecking=accept-new \
                -o LogLevel=ERROR \
                "$user@$ip" hostname -s 2>/dev/null) || return 1
-    name="${name//[[:space:]]/}"
+    # An rc file can print a banner next to the name, and no banner line can
+    # be told apart from a hostname. Accept only output that is one word.
+    name="$(tr -d '\r' <<<"$name" | awk 'NF { n++; v = $1; w = NF } END { if (n == 1 && w == 1) print v }')"
     valid_hostname "$name" || return 1
     printf '%s' "$name"
 }

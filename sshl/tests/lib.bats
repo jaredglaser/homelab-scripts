@@ -214,3 +214,27 @@ esac'
     [ "${ignored_ips[0]}" = "192.0.2.3" ]
     [ -z "${ignored_name[192.0.2.3]:-}" ]
 }
+
+@test "resolve_remote_hostname: a banner beside the name is never joined into it" {
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd ssh 'printf "%b" "$SSH_REPLY"'
+    local reply
+    for reply in 'Welcome\npve\n' 'pve\nlogout\n' 'Welcome to pve\n'; do
+        SSH_REPLY="$reply" run resolve_remote_hostname 192.0.2.1
+        if [ "$status" -eq 0 ] || [ -n "$output" ]; then
+            echo "reply '$reply' gave status $status and '$output'" >&2
+            return 1
+        fi
+    done
+    SSH_REPLY='\npve\r\n\n' run resolve_remote_hostname 192.0.2.1
+    [ "$status" -eq 0 ]
+    [ "$output" = "pve" ]
+}
+
+@test "scan_subnet: a host whose name comes with a banner is shown by its IP" {
+    stub_cmd ssh 'printf "Welcome\npve\n"'
+    stub_cmd getent 'exit 2'
+    scan_subnet
+    [ -z "${discovered_name[192.0.2.1]:-}" ]
+    [ "$(resolve_hostname 192.0.2.1)" = "192.0.2.1" ]
+}
