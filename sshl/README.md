@@ -6,9 +6,9 @@ Runs on your workstation, not on the homelab nodes themselves.
 
 ## Requirements
 
-- bash, tmux and fzf 0.46.0 or newer. sshl was tested with tmux 3.4, bash 5.2 and fzf 0.54.3.
+- bash, tmux and fzf. sshl was tested with tmux 3.4, bash 5.2 and fzf 0.54.3. It stops with an error on an fzf older than 0.46.0, which lacks a feature the popups use.
 - nmap, an SSH client, `flock` (util-linux), `getent`
-- a terminal emulator. konsole is the default. xterm, alacritty, kitty, tilix and foot also work: set `terminal=` in `config`.
+- a terminal emulator, konsole by default. To use another, set `terminal=` in `config` to its command. sshl adds `-e` and the attach command, unless the value already ends in an option, as in `terminal=wezterm start --`.
 - a UTF-8 locale, or `●` and `↻` show as `_`
 
 > [!NOTE]
@@ -64,7 +64,7 @@ The second status row shows uptime and pending package updates for the host in t
 
 Configuration lives in `sshl/config` (created from `config.example` on first run). Per-host overrides for username, tab name, and pane commands are supported. See the comments in `config.example`.
 
-A `#` starts a comment at the start of a line or after whitespace, and quotes around a whole value are dropped. A line that is not `key=value`, an unknown key, or a per-host key that names a host instead of its IP is reported with its line number and skipped. The config is rejected at load time, with a message naming the key, when `subnet` is not set, when `default_user`, `left_cmd` or `right_cmd` is empty, when `layout` is not one of `even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`, or when `session_name` is empty or contains `.` or `:`. `terminal` may carry arguments (`terminal=konsole --profile homelab`). sshl runs it with `-e` and the attach command, unless the value already ends in the option the terminal takes before a command (`-e`, `-x` or `--`).
+A `#` starts a comment at the start of a line or after whitespace. One pair of quotes around a whole value is dropped, and any other quote is kept as written. A line that is not `key=value`, an unknown key, or a per-host key that names a host instead of its IP is reported with its line number and skipped. The config is rejected at load time, with a message naming the key or value, when `subnet` is not set or an entry in it is not an IPv4 range in CIDR form, when `default_user`, `left_cmd` or `right_cmd` is empty, when `layout` is not one of `even-horizontal`, `even-vertical`, `main-horizontal`, `main-vertical`, `tiled`, when `session_name` is empty or contains `.` or `:`, or when a `host.<ip>.name` is not a plain host name (letters, digits, `.`, `_` and `-`). `terminal` may carry arguments (`terminal=konsole --profile homelab`). It is split on spaces, so no argument can contain one, quoted or not.
 
 sshl uses your `~/.ssh/config` for entries that match the host's IP, such as `Port` or `ProxyJump`. Two exceptions: the user always comes from `default_user` or `host.<ip>.user`, and the scan only finds hosts listening on port 22.
 

@@ -1,6 +1,6 @@
 # sshl tests
 
-Run `bats sshl/tests/` from the repo root. CI pins fzf 0.54.3. The popup tests need fzf 0.46.0 or newer and skip with a message on an older one.
+Run `bats sshl/tests/` from the repo root. The suite needs bats, tmux, fzf 0.46.0 or newer for the popup tests, and `script` and `flock` from util-linux (`setpriv` too when run as root). A test that cannot run on this machine skips with a message, and fails instead when `CI` is set.
 
 The suite never touches a real host, the real config or the real `homelab` session:
 
