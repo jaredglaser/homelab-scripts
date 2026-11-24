@@ -109,3 +109,60 @@ load test_helper
     stderr=$(source "$SSHL_SRC/sshl-lib.sh" 2>&1 >/dev/null)
     [[ "$stderr" == *"unknown config key"* ]]
 }
+
+@test "read_cache: succeeds when the last line has no name" {
+    printf '192.0.2.51\thost-b\n192.0.2.50\t\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
+    read_cache
+    [ "${#ips[@]}" = "2" ]
+    [ "${ips[1]}" = "192.0.2.50" ]
+    [ -z "${cached_name[192.0.2.50]:-}" ]
+}
+
+@test "read_ignored: succeeds when the last line has no name" {
+    printf '192.0.2.9\told-host\n192.0.2.10\t\n' > "$SSHL_DIR_OVERRIDE/ignored.cache"
+    read_ignored
+    [ "${#ignored_ips[@]}" = "2" ]
+    [ "${ignored_ips[1]}" = "192.0.2.10" ]
+}
+
+# The writers stage into "<file>.tmp.$$". Pointing that path at /dev/full
+# makes every write fail with ENOSPC, which chmod cannot do for root.
+@test "write_cache: a failed write returns non-zero and keeps the old cache" {
+    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
+    before=$(cat "$SSHL_DIR_OVERRIDE/ips.cache")
+    read_cache
+    ln -s /dev/full "$SSHL_DIR_OVERRIDE/ips.cache.tmp.$$"
+    if write_cache; then rc=0; else rc=1; fi
+    [ "$rc" -eq 1 ]
+    [ ! -L "$SSHL_DIR_OVERRIDE/ips.cache" ]
+    [ "$(cat "$SSHL_DIR_OVERRIDE/ips.cache")" = "$before" ]
+    [ ! -L "$SSHL_DIR_OVERRIDE/ips.cache.tmp.$$" ]
+}
+
+@test "write_ignored: a failed write returns non-zero and keeps the old file" {
+    printf '192.0.2.9\told-host\n' > "$SSHL_DIR_OVERRIDE/ignored.cache"
+    read_ignored
+    ln -s /dev/full "$SSHL_DIR_OVERRIDE/ignored.cache.tmp.$$"
+    if write_ignored; then rc=0; else rc=1; fi
+    [ "$rc" -eq 1 ]
+    [ ! -L "$SSHL_DIR_OVERRIDE/ignored.cache" ]
+    [ "$(cat "$SSHL_DIR_OVERRIDE/ignored.cache")" = $'192.0.2.9\told-host' ]
+    [ ! -L "$SSHL_DIR_OVERRIDE/ignored.cache.tmp.$$" ]
+}
+
+@test "scan_subnet: keeps hosts that neither ssh nor reverse DNS can name" {
+    stub_cmd ssh 'exit 255'
+    stub_cmd getent 'exit 2'
+    scan_subnet
+    # shellcheck disable=SC2154  # set by scan_subnet in sshl-lib.sh
+    [ "${#discovered_ips[@]}" = "2" ]
+    [ "${discovered_ips[0]}" = "192.0.2.1" ]
+    [ "${discovered_ips[1]}" = "192.0.2.2" ]
+    [ -z "${discovered_name[192.0.2.1]:-}" ]
+    [ "$(resolve_hostname 192.0.2.1)" = "192.0.2.1" ]
+
+    ips=("${discovered_ips[@]}")
+    write_cache
+    read_cache
+    [ "${#ips[@]}" = "2" ]
+}
