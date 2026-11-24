@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Fake nmap for tests. Writes two fake hosts to the -oG <path> file and
 # prints their scan report lines the way nmap's normal output does.
+# Its arguments go to nmap.args, one per line, for tests that check them.
+printf '%s\n' "$@" > "${SSHL_DATA_DIR_OVERRIDE:?}/nmap.args"
 output_file=""
 args=("$@")
 for i in "${!args[@]}"; do

@@ -189,6 +189,16 @@ EOF
     [ "$(sed -n '2,4p' "$SSHL_DATA_DIR_OVERRIDE/err.log")" = $'  192.0.2.0/24:\n    192.0.2.1\n    192.0.2.2' ]
 }
 
+@test "scan_subnet: asks nmap only for hosts with port 22 open" {
+    stub_cmd ssh 'exit 255'
+    stub_cmd getent 'exit 2'
+    scan_subnet 2>/dev/null
+    local args
+    args=" $(tr '\n' ' ' < "$SSHL_DATA_DIR_OVERRIDE/nmap.args")"
+    [[ "$args" == *" -p 22 "* ]]
+    [[ "$args" == *" --open "* ]]
+}
+
 @test "read_cache: succeeds when the last line has no name" {
     printf '192.0.2.51\thost-b\n192.0.2.50\t\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
