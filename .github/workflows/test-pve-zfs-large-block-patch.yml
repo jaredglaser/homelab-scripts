@@ -3,8 +3,9 @@ on:
   push:
     branches: [main]
     paths: ['pve-zfs-large-block-patch/**', '.github/workflows/test-pve-zfs-large-block-patch.yml']
+  # No paths filter: these checks are required, and a filtered workflow never
+  # reports on a pull request outside its paths, which would block it.
   pull_request:
-    paths: ['pve-zfs-large-block-patch/**', '.github/workflows/test-pve-zfs-large-block-patch.yml']
 
 permissions:
   contents: read
@@ -14,7 +15,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  pve-changes:
+    name: pve-changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      pve: ${{ steps.diff.outputs.pve }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: diff
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          pve=true
+          if [ "$EVENT" = pull_request ]; then
+            git diff --name-only "$BASE...HEAD" > changed.txt
+            cat changed.txt
+            grep -qE '^(pve-zfs-large-block-patch/|\.github/workflows/test-pve-zfs-large-block-patch\.yml$)' changed.txt || pve=false
+          fi
+          echo "pve=$pve" | tee -a "$GITHUB_OUTPUT"
+
+  pve-bats:
+    name: pve-bats
+    needs: pve-changes
+    if: needs.pve-changes.outputs.pve == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -36,27 +63,30 @@ jobs:
       - name: Run the bats suite
         run: bats pve-zfs-large-block-patch/tests/
 
-  e2e:
+  pve-e2e:
+    name: pve-e2e
+    needs: pve-changes
+    if: needs.pve-changes.outputs.pve == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: End-to-end check with this commit's installer
         run: pve-zfs-large-block-patch/tests/e2e/run.sh
       # raw.githubusercontent.com can serve the previous main for a few minutes.
       - name: Wait until main's raw files match this commit
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.repository == 'jaredglaser/homelab-scripts'
         run: |
           base=https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch
           for _ in $(seq 20); do
-            if curl -fsSL "$base/install.sh" | cmp -s - pve-zfs-large-block-patch/install.sh &&
-               curl -fsSL "$base/pve-zfs-large-block-patch.sh" | cmp -s - pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh; then
+            if curl -fsSL --max-time 30 "$base/install.sh" | cmp -s - pve-zfs-large-block-patch/install.sh &&
+               curl -fsSL --max-time 30 "$base/pve-zfs-large-block-patch.sh" | cmp -s - pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh; then
               exit 0
             fi
             sleep 30
           done
           echo "raw.githubusercontent.com still serves different files for main after 10 minutes" >&2
           exit 1
-      - name: End-to-end check with the README's one-liner
-        if: github.event_name == 'push'
+      - name: End-to-end check with the README's one-liners
+        if: github.event_name == 'push' && github.repository == 'jaredglaser/homelab-scripts'
         run: pve-zfs-large-block-patch/tests/e2e/run.sh --one-liner
