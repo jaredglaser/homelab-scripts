@@ -112,8 +112,8 @@ fi
 subnet=""
 session_name="homelab"
 default_user="root"
-left_cmd='ssh {user}@{ip}'
-right_cmd='ssh -t {user}@{ip} htop'
+left_cmd='ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 {user}@{ip}'
+right_cmd='ssh -t -o ConnectTimeout=10 -o ServerAliveInterval=15 {user}@{ip} htop'
 terminal="konsole"
 layout="even-horizontal"
 

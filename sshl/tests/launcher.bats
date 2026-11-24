@@ -161,7 +161,7 @@ exec '$REAL_TMUX' \"\$@\""
     run env TMUX="/tmp/tmux-other/default,1,0" "$SSHL_SRC/sshl"
     [ "$status" -eq 0 ]
     [[ "$output" == *"inside another tmux server"* ]]
-    [[ "$output" == *"tmux -L $SOCKET new-session -t '=$session_name'"* ]]
+    [[ "$output" == *"tmux -L $SOCKET -u new-session -t '=$session_name'"* ]]
 }
 
 @test "sshl: returns at once when its output is a pipe, and the terminal's output stays out of it" {
