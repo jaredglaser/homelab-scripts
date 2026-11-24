@@ -8,7 +8,7 @@
 # sshl will not run until this is set.
 subnet=
 
-# Tmux session name (no '.' or ':', which tmux reads as separators)
+# Tmux session name. No '.' or ':'.
 session_name=homelab
 
 # Terminal emulator to open the session in. Arguments are allowed, e.g.
