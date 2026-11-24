@@ -90,6 +90,9 @@ fi
 session_exists && set_session_env
 
 $built || echo "Reusing existing session '$session_name' (use --rebuild to recreate)." >&2
+if ! $built && config_changed_since_build; then
+    echo "$CONFIG_FILE changed after the session was built. Open windows keep their old users, names and commands until 'sshl --rebuild', which closes every sshl terminal and opens a fresh one." >&2
+fi
 
 # Grouped attach: a new session sharing the base session's windows but
 # with its own focus. destroy-unattached cleans up when the konsole

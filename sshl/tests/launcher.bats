@@ -188,6 +188,24 @@ exec sleep 30'
     [[ "$output" == *"Error: the terminal command 'broken-term' exited with status 2"* ]]
 }
 
+@test "sshl: a plain run says when the config changed after the build" {
+    seed_cache
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" != *"changed after the session was built"* ]]
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [[ "$output" != *"changed after the session was built"* ]]
+    set_config default_user otheruser
+    touch -d "@$(( $(date +%s) + 10 ))" "$SSHL_DATA_DIR_OVERRIDE/config"
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"$SSHL_DATA_DIR_OVERRIDE/config changed after the session was built"* ]]
+    run env -u TMUX "$SSHL_SRC/sshl" --rebuild
+    [ "$status" -eq 0 ]
+    run env -u TMUX "$SSHL_SRC/sshl"
+    [[ "$output" != *"changed after the session was built"* ]]
+}
+
 # A terminal that records its arguments, one per line, and exits at once.
 install_arg_logger() {
     # shellcheck disable=SC2016  # expanded by the stub, not here
