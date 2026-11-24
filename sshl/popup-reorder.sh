@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 # Hand-rolled keyboard TUI. State machine: nav (cursor moves) and grab
 # (cursor + held item move together). On apply, rewrite ips.cache in
@@ -157,7 +158,6 @@ apply_reorder() {
         "${TMUX_CMD[@]}" move-window -r -t "=$session_name" 2>/dev/null || true
     fi
 
-    refresh_session_options
     if (( failed > 0 )); then
         echo "Reordered $moved window(s), $failed failed. Run 'sshl --rebuild' if the session looks wrong." >&2
         return 2
@@ -177,7 +177,8 @@ _reorder_render() {
     tput cup 0 0 2>/dev/null || true
 
     local header_l1="↑/↓ or j/k move cursor • space grab/drop • enter apply • q/esc cancel"
-    local header_l2="grabbed: $([[ $grabbed -eq 1 ]] && echo 'YES, arrows now move the held item' || echo 'no')"
+    local header_l2="grabbed: no"
+    (( grabbed )) && header_l2="grabbed: YES, arrows now move the held item"
     printf '%s\n' "$header_l1"
     printf '%s\n' "$header_l2"
     printf '%s\n' "$(printf '─%.0s' $(seq 1 $((cols<60?cols:60))))"
@@ -191,17 +192,17 @@ _reorder_render() {
         name="${cached_name[$ip]:-$ip}"
         if (( i == cursor )); then
             if (( grabbed )); then
-                marker="${grab_style}>>${reset} "
+                marker=">>"
                 prefix="${grab_style}"
             else
-                marker="${style}> ${reset}"
+                marker="> "
                 prefix="${style}"
             fi
         else
             marker="  "
             prefix=""
         fi
-        printf '%b%2d  %-15s  %s%b\n' "$prefix" "$((i+1))" "$ip" "$name" "$reset"
+        printf '%b%s%2d  %-15s  %s%b\n' "$prefix" "$marker" "$((i+1))" "$ip" "$name" "$reset"
     done
 }
 

@@ -1,19 +1,19 @@
+# shellcheck shell=bash
 # Shared library for sshl and the popup scripts. Source this. Do not execute directly.
 [[ -n "${_SSHL_LIB:-}" ]] && return 0
 _SSHL_LIB=1
 
-SSHL_DIR="${SSHL_DIR_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-# SSHL_BIN must be set by the calling script before sourcing this lib.
-# Popup scripts don't set it (they never call set_session_options), so
-# default to empty to satisfy set -u without breaking their use case.
-SSHL_BIN="${SSHL_BIN:-}"
+# Scripts and the tmux conf live next to this file. The config and the
+# caches live in SSHL_DATA_DIR, which only the tests move.
+SSHL_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SSHL_DATA_DIR="${SSHL_DATA_DIR_OVERRIDE:-$SSHL_DIR}"
 
-CONFIG_FILE="${SSHL_DIR}/config"
+CONFIG_FILE="${SSHL_DATA_DIR}/config"
 TMUX_CONF="${SSHL_DIR}/homelab.tmux.conf"
 PICKER="${SSHL_DIR}/host-picker.sh"
 INFO_SCRIPT="${SSHL_DIR}/host-info.sh"
-CACHE_FILE="${SSHL_DIR}/ips.cache"
-IGNORED_FILE="${SSHL_DIR}/ignored.cache"
+CACHE_FILE="${SSHL_DATA_DIR}/ips.cache"
+IGNORED_FILE="${SSHL_DATA_DIR}/ignored.cache"
 SOCKET="${SSHL_SOCKET_OVERRIDE:-homelab}"
 TMUX_CMD=(tmux -L "$SOCKET")
 
@@ -45,13 +45,38 @@ require() {
     fi
 }
 
+# The popups read FZF_SELECT_COUNT, which fzf exports from 0.46.0 on.
+SSHL_FZF_MIN=0.46.0
+
+fzf_version() {
+    local v
+    v="$(fzf --version 2>/dev/null)" || return 0
+    v="${v%% *}"
+    if [[ "$v" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then printf '%s' "$v"; fi
+}
+
+fzf_new_enough() {
+    [[ -n "$1" && "$(printf '%s\n%s\n' "$SSHL_FZF_MIN" "$1" | sort -V | head -n1)" == "$SSHL_FZF_MIN" ]]
+}
+
+require_fzf() {
+    require fzf
+    local v
+    v="$(fzf_version)"
+    if ! fzf_new_enough "$v"; then
+        echo "Error: fzf $SSHL_FZF_MIN or newer is required, found ${v:-a version sshl could not read}." >&2
+        echo "Install a newer fzf from https://github.com/junegunn/fzf/releases" >&2
+        exit 1
+    fi
+}
+
 if [[ ! -f "$CONFIG_FILE" ]]; then
     if [[ -f "${SSHL_DIR}/config.example" ]]; then
         cp "${SSHL_DIR}/config.example" "$CONFIG_FILE" || {
             echo "Error: failed to copy config.example to $CONFIG_FILE (check permissions and disk space)" >&2
             exit 1
         }
-        echo "Created config from config.example. Review $CONFIG_FILE before re-running." >&2
+        echo "Created $CONFIG_FILE from config.example. Set subnet= in it to the network your hosts are on, then run sshl again." >&2
     else
         echo "Error: config file not found at $CONFIG_FILE" >&2
     fi
@@ -72,13 +97,33 @@ declare -gA host_left_cmd
 declare -gA host_right_cmd
 declare -gA cached_name
 
+lineno=0
 while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}"
+    lineno=$((lineno + 1))
     line="$(trim "$line")"
-    [[ -z "$line" ]] && continue
-    [[ "$line" != *=* ]] && continue
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    # A # inside a word belongs to the value (ssh -o options, URLs).
+    line="${line%%[[:space:]]#*}"
+    if [[ "$line" != *=* ]]; then
+        echo "Warning: line $lineno of $CONFIG_FILE is not key=value, ignoring it: $line" >&2
+        continue
+    fi
     key="$(trim "${line%%=*}")"
     value="$(trim "${line#*=}")"
+    # Quotes as in a shell file would otherwise stay in the value, and
+    # terminal="konsole" would look for a command named "konsole" with them.
+    if [[ "$value" == \"*\" || "$value" == \'*\' ]] && (( ${#value} >= 2 )); then
+        value="${value:1:${#value}-2}"
+    fi
+    # Windows are matched to overrides by IP, so host.web01.user would
+    # never apply.
+    if [[ "$key" =~ ^host\.(.+)\.(user|name|left_cmd|right_cmd)$ ]]; then
+        host_key="${BASH_REMATCH[2]}"
+        if [[ ! "${BASH_REMATCH[1]}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            echo "Warning: line $lineno of $CONFIG_FILE: per-host keys take the host's IP, as in host.192.168.1.10.$host_key, ignoring $key." >&2
+            continue
+        fi
+    fi
     case "$key" in
         subnet)        subnet="$value" ;;
         session_name)  session_name="$value" ;;
@@ -88,19 +133,82 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         terminal)      terminal="$value" ;;
         layout)        layout="$value" ;;
         host.*.user)       ip="${key#host.}"; host_user["${ip%.user}"]="$value" ;;
-        host.*.name)       ip="${key#host.}"; host_name["${ip%.name}"]="$value" ;;
+        host.*.name)
+            if ! valid_hostname "$value"; then
+                echo "Error: line $lineno of $CONFIG_FILE: $key '$value' is not a plain host name. Use letters, digits, '.', '_' and '-', start with a letter or digit, and keep it to 63 characters." >&2
+                exit 1
+            fi
+            ip="${key#host.}"; host_name["${ip%.name}"]="$value" ;;
         host.*.left_cmd)   ip="${key#host.}"; host_left_cmd["${ip%.left_cmd}"]="$value" ;;
         host.*.right_cmd)  ip="${key#host.}"; host_right_cmd["${ip%.right_cmd}"]="$value" ;;
-        *) echo "Warning: unknown config key '$key'" >&2 ;;
+        *) echo "Warning: line $lineno of $CONFIG_FILE has an unknown key '$key', ignoring it." >&2 ;;
     esac
 done < "$CONFIG_FILE"
 
-if [[ -z "$subnet" ]]; then
-    echo "Error: 'subnet' not set in $CONFIG_FILE" >&2
+declare -ga subnets=()
+read -ra subnets <<<"${subnet//,/ }"
+if (( ${#subnets[@]} == 0 )); then
+    echo "Error: 'subnet' is not set in $CONFIG_FILE. Set it to the network your hosts are on, in CIDR form such as subnet=192.168.1.0/24." >&2
     exit 1
 fi
 
+# Each entry reaches nmap as an argument, so one starting with - would be
+# read as an option, and nmap exits 0 on a target it cannot parse.
+valid_cidr() {
+    local octet
+    [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+    for octet in "${BASH_REMATCH[@]:1:4}"; do
+        (( 10#$octet <= 255 )) || return 1
+    done
+    (( 10#${BASH_REMATCH[5]} <= 32 ))
+}
+
+for entry in "${subnets[@]}"; do
+    if ! valid_cidr "$entry"; then
+        echo "Error: subnet '$entry' in $CONFIG_FILE is not a network in CIDR form. Use one or more ranges such as subnet=192.168.1.0/24 10.0.20.0/24." >&2
+        exit 1
+    fi
+done
+
+# An empty command gives a pane that exits at once, and an empty user an
+# ssh to "@ip". Both fail later with messages that do not name the key.
+for key in default_user left_cmd right_cmd; do
+    if [[ -z "${!key}" ]]; then
+        echo "Error: '$key' in $CONFIG_FILE is empty. Give it a value, or remove the line to use the default." >&2
+        exit 1
+    fi
+done
+
+case "$layout" in
+    even-horizontal|even-vertical|main-horizontal|main-vertical|tiled) ;;
+    *)
+        echo "Error: layout '$layout' in $CONFIG_FILE is not a tmux layout. Use one of: even-horizontal, even-vertical, main-horizontal, main-vertical, tiled." >&2
+        exit 1 ;;
+esac
+
+# tmux reads . and : in a target as the window and pane separators.
+if [[ -z "$session_name" || "$session_name" == *[.:]* ]]; then
+    echo "Error: session_name '$session_name' in $CONFIG_FILE is not usable. Use a non-empty name without '.' or ':'." >&2
+    exit 1
+fi
+
+read -ra terminal_cmd <<<"$terminal"
+if (( ${#terminal_cmd[@]} == 0 )); then
+    echo "Error: 'terminal' in $CONFIG_FILE is empty. Set it to a terminal emulator that accepts -e command args, such as konsole." >&2
+    exit 1
+fi
+
+# A value that already ends in an option is used as written.
+# shellcheck disable=SC2034  # the launcher reads terminal_exec
+case "${terminal_cmd[${#terminal_cmd[@]}-1]}" in
+    -*) terminal_exec=() ;;
+    *)  terminal_exec=(-e) ;;
+esac
+
 require tmux
+# Every pane, the scan's host names and the status-bar host info use ssh.
+# Without it each pane dies at once with status 127.
+require ssh
 
 # ips.cache mirrors the live tmux session. Each line is `<ip>\t<name>`
 # in display order (NOT IP-sorted). The popup flows mutate the cache
@@ -172,18 +280,11 @@ _write_host_file() {
 }
 
 write_cache() {
-    _write_host_file "$CACHE_FILE" ips cached_name || return 1
-    update_cache_mtime_option
+    _write_host_file "$CACHE_FILE" ips cached_name
 }
 
 write_ignored() {
     _write_host_file "$IGNORED_FILE" ignored_ips ignored_name
-}
-
-update_cache_mtime_option() {
-    local mtime
-    mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE" 2>/dev/null) || return 0
-    "${TMUX_CMD[@]}" set-option -g @cache_mtime "$mtime" 2>/dev/null || true
 }
 
 declare -ga discovered_ips=()
@@ -225,9 +326,9 @@ scan_subnet() {
     local nmap_tmp
     nmap_tmp="$(mktemp)"
 
-    # -oG to file keeps host records out of stdout, leaving only the
-    # human-readable stats lines (including --stats-every progress).
-    nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "$subnet" -oG "$nmap_tmp" \
+    # -oG to a file keeps the grepable records off stdout. The loop prints
+    # the "Nmap scan report for" lines of the normal output as progress.
+    if ! nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "${subnets[@]}" -oG "$nmap_tmp" \
         | {
             local current_prefix="" line ip prefix
             while IFS= read -r line; do
@@ -240,7 +341,11 @@ scan_subnet() {
                 fi
                 echo "    $ip" >&2
             done
-        }
+        }; then
+        rm -f "$nmap_tmp"
+        echo "Error: nmap failed to scan $subnet. Check the subnet in $CONFIG_FILE and nmap's message above." >&2
+        return 1
+    fi
 
     local -a scanned=()
     local -A skip=()
@@ -326,32 +431,20 @@ find_window_id_by_ip() {
         | awk -v ip="$target" '$2 == ip {print $1; exit}'
 }
 
+# The status bar and prefix r read @info_script as a format.
 set_session_options() {
-    "${TMUX_CMD[@]}" set-option -g @subnet         "$subnet"
-    "${TMUX_CMD[@]}" set-option -g @cache_file     "$CACHE_FILE"
-    "${TMUX_CMD[@]}" set-option -g @ignored_file   "$IGNORED_FILE"
-    "${TMUX_CMD[@]}" set-option -g @sshl_bin       "$SSHL_BIN"
-    "${TMUX_CMD[@]}" set-option -g @picker_script  "$PICKER"
-    "${TMUX_CMD[@]}" set-option -g @info_script    "$INFO_SCRIPT"
-    "${TMUX_CMD[@]}" set-option -g @default_layout "$layout"
-    update_cache_mtime_option
+    "${TMUX_CMD[@]}" set-option -g @info_script "$INFO_SCRIPT"
     set_session_env
 }
 
-# Mirror the @var options into the global tmux environment. The popup
-# key bindings need these as shell variables ($SSHL_DIR etc.) because
-# display-popup -E does NOT format-expand its shell-command despite
-# what the docs imply, so #{@sshl_bin} would reach the spawned shell as a
-# literal string. Newly-spawned panes (popups included) inherit this
-# global env, so by the time prefix S fires the popup's shell already
-# has $SSHL_DIR set.
+# The popup key bindings read these as shell variables because
+# display-popup does not format-expand its shell-command, so #{@var}
+# would reach the popup's shell as a literal string. Popups inherit
+# tmux's global environment when they spawn.
 set_session_env() {
-    "${TMUX_CMD[@]}" set-environment -g SSHL_BIN     "$SSHL_BIN"     2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_DIR     "$SSHL_DIR"     2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_CACHE   "$CACHE_FILE"   2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_IGNORED "$IGNORED_FILE" 2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_PICKER  "$PICKER"       2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_INFO    "$INFO_SCRIPT"  2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_DIR    "$SSHL_DIR"   2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_CACHE  "$CACHE_FILE" 2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_PICKER "$PICKER"     2>/dev/null || true
 }
 
 # Add a window for a host. With --first, opens the session via
@@ -371,17 +464,16 @@ add_window() {
     right_title="${host_right_cmd[$ip]:-$right_cmd}"
     right_title="${right_title%% *}"
 
-    local env_args=(-e "HOST_IP=$ip" -e "HOST_NAME=$name" -e "HOST_USER=$user")
     local wid
     if $first; then
         wid=$("${TMUX_CMD[@]}" -f "$TMUX_CONF" new-session -d -s "$session_name" \
-            -n "$name" -P -F '#{window_id}' "${env_args[@]}" "$left") || {
+            -n "$name" -P -F '#{window_id}' "$left") || {
             echo "Warning: failed to open the session with $ip ($name), skipping" >&2
             return 1
         }
     else
         wid=$("${TMUX_CMD[@]}" new-window -t "=$session_name:" -n "$name" \
-            -P -F '#{window_id}' "${env_args[@]}" "$left") || {
+            -P -F '#{window_id}' "$left") || {
             echo "Warning: failed to create window for $ip ($name), skipping" >&2
             return 1
         }
@@ -398,7 +490,7 @@ add_window() {
 
     # Structural: the right pane is core to the per-host UI. If it
     # fails, kill the partial window rather than leave half a layout.
-    if ! "${TMUX_CMD[@]}" split-window -h -t "$wid" "${env_args[@]}" "$right" 2>/dev/null \
+    if ! "${TMUX_CMD[@]}" split-window -h -t "$wid" "$right" 2>/dev/null \
        || ! "${TMUX_CMD[@]}" select-layout -t "$wid" "$layout" 2>/dev/null; then
         echo "Warning: pane layout failed for $ip ($name), killing partial window" >&2
         "${TMUX_CMD[@]}" kill-window -t "$wid" 2>/dev/null || true
@@ -441,7 +533,6 @@ wait_for_server_exit() {
     done
 }
 
-# "ip (name), ip (name)" for the hosts given, for messages that name them.
 format_host_list() {
     local out="" ip
     for ip in "$@"; do
@@ -459,7 +550,7 @@ build_session() {
     wait_for_server_exit
 
     if [[ ${#ips[@]} -eq 0 ]]; then
-        echo "Error: cache is empty; nothing to build." >&2
+        echo "Error: the cache is empty, so there is nothing to build." >&2
         return 1
     fi
 
@@ -485,7 +576,7 @@ build_session() {
         return 1
     fi
 
-    "${TMUX_CMD[@]}" select-window -t "$session_name:^"
+    "${TMUX_CMD[@]}" select-window -t "=$session_name:^"
     # Set last so an aborted build leaves the marker unset. The next
     # session_is_healthy check then forces a clean rebuild.
     "${TMUX_CMD[@]}" set-option -g @build_complete 1
@@ -493,11 +584,4 @@ build_session() {
     if (( ${#skipped[@]} > 0 )); then
         echo "Skipped ${#skipped[@]} host(s): $(format_host_list "${skipped[@]}"). Fix the cause above and run 'sshl --rebuild' to retry." >&2
     fi
-}
-
-# Update @cache_mtime after popup-driven cache writes so the status
-# bar reflects the new write time.
-refresh_session_options() {
-    session_exists || return 0
-    update_cache_mtime_option
 }

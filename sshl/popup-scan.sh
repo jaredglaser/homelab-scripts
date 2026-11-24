@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 # Run nmap, present a multi-select fzf where each row carries an
 # explicit action tag: CURRENT (already a window) or NEW (just found).
@@ -14,7 +15,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
 # many entries and can silently leave the diff thinking "nothing was
 # kept", killing every window and destroying the session).
 popup_scan() {
-    require fzf
+    require_fzf
     require nmap
     read_cache
     read_ignored
@@ -69,6 +70,7 @@ popup_scan() {
     trap 'rm -f "$flag"' RETURN
 
     local result
+    # shellcheck disable=SC2016  # SSHL_FLAG is expanded by the shell fzf runs
     result=$(printf '%s\n' "$fzf_input" \
         | SSHL_FLAG="$flag" fzf --multi --reverse --no-sort --height=100% \
               --header="$header" --header-first \
@@ -128,6 +130,7 @@ apply_scan_diff() {
         for c in "${ips[@]}"; do [[ "$c" != "$ip" ]] && new_ips+=("$c"); done
         ips=("${new_ips[@]}")
         ignored_ips+=("$ip")
+        # shellcheck disable=SC2034  # write_ignored reads it through a nameref
         ignored_name["$ip"]="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
         unset 'cached_name[$ip]'
     done
@@ -167,7 +170,6 @@ apply_scan_diff() {
         done
     fi
 
-    refresh_session_options
     echo "Added ${#_to_add[@]}, removed ${#_to_remove[@]}." >&2
     if (( ${#no_window[@]} > 0 )); then
         echo "No window for ${#no_window[@]} host(s): $(format_host_list "${no_window[@]}")." >&2

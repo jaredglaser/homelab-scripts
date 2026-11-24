@@ -1,21 +1,69 @@
 name: Test sshl
 on:
+  # Pushes to a PR branch run through pull_request, which also covers
+  # stacked PRs whose base is not main.
   push:
+    branches: [main]
     paths: ['sshl/**', '.github/workflows/test-sshl.yml']
+  # No paths filter: a required check that never starts blocks the merge.
+  # sshl-changes decides instead, and a job skipped by its if reports success.
   pull_request:
-    paths: ['sshl/**', '.github/workflows/test-sshl.yml']
+
+permissions:
+  contents: read
 
 jobs:
-  test:
+  sshl-changes:
+    name: sshl changes
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sshl: ${{ steps.diff.outputs.sshl }}
     steps:
-      - uses: actions/checkout@v4
-      - name: Install dependencies
-        run: sudo apt-get install -y tmux bats
-      - name: Install fzf
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        shell: bash
+        # The pull_request checkout is the merge commit, so its first parent is the base.
         run: |
-          FZF_VER=0.54.3
-          curl -fsSL "https://github.com/junegunn/fzf/releases/download/v${FZF_VER}/fzf-${FZF_VER}-linux_amd64.tar.gz" \
-            | sudo tar -xzC /usr/local/bin fzf
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            echo "sshl=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          if grep -qE '^(sshl/|\.github/workflows/test-sshl\.yml$)' <<<"$changed"; then
+            echo "sshl=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sshl=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  sshl-tests:
+    name: sshl tests
+    needs: sshl-changes
+    if: needs.sshl-changes.outputs.sshl == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tmux bats shellcheck
+      - name: Install fzf
+        env:
+          FZF_VER: 0.54.3
+          FZF_SHA256: 6867008c46307f036e48b42ab9bfdc3224657f6a65d70c58a1f456c4d9348cf6
+        run: |
+          curl -fsSLo fzf.tgz "https://github.com/junegunn/fzf/releases/download/v${FZF_VER}/fzf-${FZF_VER}-linux_amd64.tar.gz"
+          echo "${FZF_SHA256}  fzf.tgz" | sha256sum -c -
+          sudo tar -xzf fzf.tgz -C /usr/local/bin fzf
+          rm fzf.tgz
+      - name: Shellcheck
+        run: shellcheck -x sshl/sshl sshl/*.sh sshl/tests/bin/* sshl/tests/test_helper.bash
       - name: Run sshl tests
         run: bats sshl/tests/
