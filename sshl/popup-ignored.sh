@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 # fzf multi-select over ignored.cache. Tick = un-ignore (returns the
 # IP to scan-candidate status). No window added immediately.
 popup_ignored() {
-    require fzf
+    require_fzf
     read_ignored
 
     if [[ ${#ignored_ips[@]} -eq 0 ]]; then

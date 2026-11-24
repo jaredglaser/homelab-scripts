@@ -104,14 +104,85 @@ load test_helper
 }
 
 @test "config: unknown key emits a warning to stderr" {
-    echo "boguskey=somevalue" >> "$SSHL_DIR_OVERRIDE/config"
+    echo "boguskey=somevalue" >> "$SSHL_DATA_DIR_OVERRIDE/config"
     unset _SSHL_LIB
     stderr=$(source "$SSHL_SRC/sshl-lib.sh" 2>&1 >/dev/null)
-    [[ "$stderr" == *"unknown config key"* ]]
+    [[ "$stderr" == *"unknown key 'boguskey'"* ]]
+}
+
+# Loads the library in a child bash against the test config, then runs
+# the given commands there.
+load_config() {
+    run bash -c "source '$SSHL_SRC/sshl-lib.sh' && $1"
+}
+
+@test "config: a # inside a value is kept, a # after whitespace starts a comment" {
+    cat >> "$SSHL_DATA_DIR_OVERRIDE/config" << 'EOF'
+left_cmd=ssh -o ProxyCommand=a#b {user}@{ip}   # trailing comment
+  # an indented comment line
+EOF
+    load_config 'printf "%s|" "$left_cmd"'
+    [ "$status" -eq 0 ]
+    [ "$output" = "ssh -o ProxyCommand=a#b {user}@{ip}|" ]
+}
+
+@test "config: a line without = is reported with its number" {
+    echo "layout even-vertical" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo "layout=$layout"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warning: line 7 of $SSHL_DATA_DIR_OVERRIDE/config is not key=value, ignoring it: layout even-vertical"* ]]
+    [[ "$output" == *"layout=even-horizontal"* ]]
+}
+
+@test "config: an invalid layout is rejected at load time" {
+    echo "layout=even-horizonal" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo loaded'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"layout 'even-horizonal'"* ]]
+    [[ "$output" == *"even-horizontal, even-vertical, main-horizontal, main-vertical, tiled"* ]]
+    [[ "$output" != *loaded* ]]
+}
+
+@test "config: a session_name with . or : is rejected at load time" {
+    local bad
+    for bad in "home.lab" "home:lab"; do
+        sed -i '/^session_name=/d' "$SSHL_DATA_DIR_OVERRIDE/config"
+        echo "session_name=$bad" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+        load_config 'echo loaded'
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"session_name '$bad'"*"without '.' or ':'"* ]]
+    done
+}
+
+@test "config: a terminal with arguments splits into the command and its arguments" {
+    sed -i '/^terminal=/d' "$SSHL_DATA_DIR_OVERRIDE/config"
+    echo "terminal=konsole --profile x" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'printf "%s|" "${terminal_cmd[@]}"'
+    [ "$status" -eq 0 ]
+    [ "$output" = "konsole|--profile|x|" ]
+}
+
+@test "fzf_new_enough: compares against the minimum by version, not by text" {
+    fzf_new_enough "$SSHL_FZF_MIN"
+    fzf_new_enough 0.54.3
+    fzf_new_enough 1.0
+    run fzf_new_enough 0.44.1
+    [ "$status" -ne 0 ]
+    run fzf_new_enough 0.9.0
+    [ "$status" -ne 0 ]
+    run fzf_new_enough ""
+    [ "$status" -ne 0 ]
+}
+
+@test "scan_subnet: prints each host nmap reports, grouped by /24" {
+    stub_cmd ssh 'exit 255'
+    stub_cmd getent 'exit 2'
+    scan_subnet 2> "$SSHL_DATA_DIR_OVERRIDE/err.log"
+    [ "$(sed -n '2,4p' "$SSHL_DATA_DIR_OVERRIDE/err.log")" = $'  192.0.2.0/24:\n    192.0.2.1\n    192.0.2.2' ]
 }
 
 @test "read_cache: succeeds when the last line has no name" {
-    printf '192.0.2.51\thost-b\n192.0.2.50\t\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
+    printf '192.0.2.51\thost-b\n192.0.2.50\t\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     [ "${#ips[@]}" = "2" ]
     [ "${ips[1]}" = "192.0.2.50" ]
@@ -213,6 +284,89 @@ esac'
     [ "${cached_name[192.0.2.2]}" = "good-name" ]
     [ "${ignored_ips[0]}" = "192.0.2.3" ]
     [ -z "${ignored_name[192.0.2.3]:-}" ]
+}
+
+@test "config: the first run creates the config and asks for a subnet before any scan" {
+    rm "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo loaded'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Created $SSHL_DATA_DIR_OVERRIDE/config from config.example. Set subnet= in it"* ]]
+    [[ "$output" != *loaded* ]]
+    cmp "$SSHL_SRC/config.example" "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo "loaded subnet=$subnet"'
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"'subnet' is not set in $SSHL_DATA_DIR_OVERRIDE/config"*"subnet=192.168.1.0/24"* ]]
+    [[ "$output" != *loaded* ]]
+}
+
+@test "config: an unknown key is reported with its line number" {
+    echo "defualt_user=admin" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo "user=$default_user"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warning: line 7 of $SSHL_DATA_DIR_OVERRIDE/config has an unknown key 'defualt_user', ignoring it."* ]]
+    [[ "$output" == *"user=testuser"* ]]
+}
+
+@test "config: a per-host key that names a host instead of an IP is reported" {
+    echo "host.web01.user=admin" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo "${#host_user[@]} overrides"'
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Warning: line 7 of $SSHL_DATA_DIR_OVERRIDE/config: per-host keys take the host's IP, as in host.192.168.1.10.user, ignoring host.web01.user."* ]]
+    [[ "$output" == *"0 overrides"* ]]
+}
+
+@test "config: quotes around a whole value are dropped" {
+    cat >> "$SSHL_DATA_DIR_OVERRIDE/config" << 'EOF2'
+subnet="10.0.0.0/24"
+terminal='konsole --profile x'
+host.192.0.2.5.right_cmd="ssh -t {user}@{ip} "htop -d 10""
+EOF2
+    load_config 'printf "%s|" "$subnet" "${terminal_cmd[@]}" "${host_right_cmd[192.0.2.5]}"'
+    [ "$status" -eq 0 ]
+    [ "$output" = '10.0.0.0/24|konsole|--profile|x|ssh -t {user}@{ip} "htop -d 10"|' ]
+}
+
+@test "config: an empty default_user, left_cmd or right_cmd is rejected at load time" {
+    local key
+    for key in default_user left_cmd right_cmd; do
+        sed -i "/^$key=/d" "$SSHL_DATA_DIR_OVERRIDE/config"
+        echo "$key=" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+        load_config 'echo loaded'
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"Error: '$key' in $SSHL_DATA_DIR_OVERRIDE/config is empty."* ]]
+        [[ "$output" != *loaded* ]]
+        sed -i "/^$key=/d" "$SSHL_DATA_DIR_OVERRIDE/config"
+    done
+}
+
+@test "scan_subnet: a subnet nmap cannot read fails and names the config key" {
+    # What nmap 7.94 prints for subnet=lan, and its exit status.
+    stub_cmd nmap 'echo "Starting Nmap 7.94SVN ( https://nmap.org )"
+echo "Failed to resolve \"lan\"." >&2
+echo "WARNING: No targets were specified, so 0 hosts scanned." >&2
+echo "Nmap done: 0 IP addresses (0 hosts up) scanned in 0.03 seconds"'
+    run scan_subnet
+    [ "$status" -eq 1 ]
+    [[ "$output" == *'Failed to resolve "lan".'* ]]
+    [[ "$output" == *"Error: nmap could not read the subnet '$subnet'. Set subnet= in $CONFIG_FILE to one or more ranges in CIDR notation"* ]]
+    [[ "$output" != *"No live hosts found"* ]]
+}
+
+@test "scan_subnet: several subnets, split on spaces or commas, each reach nmap as a target" {
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd nmap 'printf "%s\n" "$@" > "$SSHL_DATA_DIR_OVERRIDE/nmap.args"'
+    subnet="192.0.2.0/24  198.51.100.0/24,203.0.113.0/25"
+    scan_subnet 2>/dev/null
+    grep -qx '192.0.2.0/24' "$SSHL_DATA_DIR_OVERRIDE/nmap.args"
+    grep -qx '198.51.100.0/24' "$SSHL_DATA_DIR_OVERRIDE/nmap.args"
+    grep -qx '203.0.113.0/25' "$SSHL_DATA_DIR_OVERRIDE/nmap.args"
+}
+
+@test "scan_subnet: a netmask nmap rejects fails instead of scanning one host" {
+    stub_cmd nmap 'echo "Illegal netmask in \"10.1.0.0/66\". Assuming /32 (one host)" >&2'
+    run scan_subnet
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Error: nmap could not read the subnet"* ]]
 }
 
 @test "resolve_remote_hostname: a banner beside the name is never joined into it" {

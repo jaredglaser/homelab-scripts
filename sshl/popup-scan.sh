@@ -15,7 +15,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 # many entries and can silently leave the diff thinking "nothing was
 # kept", killing every window and destroying the session).
 popup_scan() {
-    require fzf
+    require_fzf
     require nmap
     read_cache
     read_ignored

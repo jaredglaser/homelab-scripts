@@ -38,13 +38,38 @@ require() {
     fi
 }
 
+# The popups read FZF_SELECT_COUNT, which fzf exports from 0.46.0 on.
+SSHL_FZF_MIN=0.46.0
+
+fzf_version() {
+    local v
+    v="$(fzf --version 2>/dev/null)" || return 0
+    v="${v%% *}"
+    if [[ "$v" =~ ^[0-9]+(\.[0-9]+)*$ ]]; then printf '%s' "$v"; fi
+}
+
+fzf_new_enough() {
+    [[ -n "$1" && "$(printf '%s\n%s\n' "$SSHL_FZF_MIN" "$1" | sort -V | head -n1)" == "$SSHL_FZF_MIN" ]]
+}
+
+require_fzf() {
+    require fzf
+    local v
+    v="$(fzf_version)"
+    if ! fzf_new_enough "$v"; then
+        echo "Error: fzf $SSHL_FZF_MIN or newer is required, found ${v:-a version sshl could not read}." >&2
+        echo "Install a newer fzf from https://github.com/junegunn/fzf/releases" >&2
+        exit 1
+    fi
+}
+
 if [[ ! -f "$CONFIG_FILE" ]]; then
     if [[ -f "${SSHL_DIR}/config.example" ]]; then
         cp "${SSHL_DIR}/config.example" "$CONFIG_FILE" || {
             echo "Error: failed to copy config.example to $CONFIG_FILE (check permissions and disk space)" >&2
             exit 1
         }
-        echo "Created config from config.example. Review $CONFIG_FILE before re-running." >&2
+        echo "Created $CONFIG_FILE from config.example. Set subnet= in it to the network your hosts are on, then run sshl again." >&2
     else
         echo "Error: config file not found at $CONFIG_FILE" >&2
     fi
@@ -65,13 +90,33 @@ declare -gA host_left_cmd
 declare -gA host_right_cmd
 declare -gA cached_name
 
+lineno=0
 while IFS= read -r line || [[ -n "$line" ]]; do
-    line="${line%%#*}"
+    lineno=$((lineno + 1))
     line="$(trim "$line")"
-    [[ -z "$line" ]] && continue
-    [[ "$line" != *=* ]] && continue
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    # A # inside a word belongs to the value (ssh -o options, URLs).
+    line="${line%%[[:space:]]#*}"
+    if [[ "$line" != *=* ]]; then
+        echo "Warning: line $lineno of $CONFIG_FILE is not key=value, ignoring it: $line" >&2
+        continue
+    fi
     key="$(trim "${line%%=*}")"
     value="$(trim "${line#*=}")"
+    # Quotes as in a shell file would otherwise stay in the value, and
+    # terminal="konsole" would look for a command named "konsole" with them.
+    if [[ "$value" == \"*\" || "$value" == \'*\' ]] && (( ${#value} >= 2 )); then
+        value="${value:1:${#value}-2}"
+    fi
+    # Windows are matched to overrides by IP, so host.web01.user would
+    # never apply.
+    if [[ "$key" =~ ^host\.(.+)\.(user|name|left_cmd|right_cmd)$ ]]; then
+        host_key="${BASH_REMATCH[2]}"
+        if [[ ! "${BASH_REMATCH[1]}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]]; then
+            echo "Warning: line $lineno of $CONFIG_FILE: per-host keys take the host's IP, as in host.192.168.1.10.$host_key, ignoring $key." >&2
+            continue
+        fi
+    fi
     case "$key" in
         subnet)        subnet="$value" ;;
         session_name)  session_name="$value" ;;
@@ -84,16 +129,54 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         host.*.name)       ip="${key#host.}"; host_name["${ip%.name}"]="$value" ;;
         host.*.left_cmd)   ip="${key#host.}"; host_left_cmd["${ip%.left_cmd}"]="$value" ;;
         host.*.right_cmd)  ip="${key#host.}"; host_right_cmd["${ip%.right_cmd}"]="$value" ;;
-        *) echo "Warning: unknown config key '$key'" >&2 ;;
+        *) echo "Warning: line $lineno of $CONFIG_FILE has an unknown key '$key', ignoring it." >&2 ;;
     esac
 done < "$CONFIG_FILE"
 
 if [[ -z "$subnet" ]]; then
-    echo "Error: 'subnet' not set in $CONFIG_FILE" >&2
+    echo "Error: 'subnet' is not set in $CONFIG_FILE. Set it to the network your hosts are on, in CIDR form such as subnet=192.168.1.0/24." >&2
     exit 1
 fi
 
+# An empty command gives a pane that exits at once, and an empty user an
+# ssh to "@ip". Both fail later with messages that do not name the key.
+for key in default_user left_cmd right_cmd; do
+    if [[ -z "${!key}" ]]; then
+        echo "Error: '$key' in $CONFIG_FILE is empty. Give it a value, or remove the line to use the default." >&2
+        exit 1
+    fi
+done
+
+case "$layout" in
+    even-horizontal|even-vertical|main-horizontal|main-vertical|tiled) ;;
+    *)
+        echo "Error: layout '$layout' in $CONFIG_FILE is not a tmux layout. Use one of: even-horizontal, even-vertical, main-horizontal, main-vertical, tiled." >&2
+        exit 1 ;;
+esac
+
+# tmux reads . and : in a target as the window and pane separators.
+if [[ -z "$session_name" || "$session_name" == *[.:]* ]]; then
+    echo "Error: session_name '$session_name' in $CONFIG_FILE is not usable. Use a non-empty name without '.' or ':'." >&2
+    exit 1
+fi
+
+read -ra terminal_cmd <<<"$terminal"
+if (( ${#terminal_cmd[@]} == 0 )); then
+    echo "Error: 'terminal' in $CONFIG_FILE is empty. Set it to a terminal emulator that accepts -e command args, such as konsole." >&2
+    exit 1
+fi
+
+# A value that already ends in the option before the command is used as written.
+# shellcheck disable=SC2034  # the launcher reads terminal_exec
+case "${terminal_cmd[${#terminal_cmd[@]}-1]}" in
+    -e|-x|--) terminal_exec=() ;;
+    *)        terminal_exec=(-e) ;;
+esac
+
 require tmux
+# Every pane, the scan's host names and the status-bar host info use ssh.
+# Without it each pane dies at once with status 127.
+require ssh
 
 # ips.cache mirrors the live tmux session. Each line is `<ip>\t<name>`
 # in display order (NOT IP-sorted). The popup flows mutate the cache
@@ -193,12 +276,15 @@ scan_subnet() {
     discovered_name=()
 
     echo "Scanning $subnet for live hosts..." >&2
-    local nmap_tmp
+    local nmap_tmp nmap_err
+    local -a subnets
+    read -ra subnets <<<"${subnet//,/ }"
     nmap_tmp="$(mktemp)"
+    nmap_err="$(mktemp)"
 
-    # -oG to file keeps host records out of stdout, leaving only the
-    # human-readable stats lines (including --stats-every progress).
-    nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "$subnet" -oG "$nmap_tmp" \
+    # -oG to a file keeps the grepable records off stdout. The loop prints
+    # the "Nmap scan report for" lines of the normal output as progress.
+    if ! nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "${subnets[@]}" -oG "$nmap_tmp" 2>"$nmap_err" \
         | {
             local current_prefix="" line ip prefix
             while IFS= read -r line; do
@@ -211,7 +297,21 @@ scan_subnet() {
                 fi
                 echo "    $ip" >&2
             done
-        }
+        }; then
+        cat "$nmap_err" >&2
+        rm -f "$nmap_tmp" "$nmap_err"
+        echo "Error: nmap failed to scan $subnet. Check the subnet in $CONFIG_FILE and nmap's message above." >&2
+        return 1
+    fi
+    cat "$nmap_err" >&2
+    # nmap exits 0 when it cannot parse its target, and scans nothing, or
+    # one host for a bad netmask, so the scan would report no hosts.
+    if grep -q -e 'No targets were specified' -e 'Illegal netmask' "$nmap_err"; then
+        rm -f "$nmap_tmp" "$nmap_err"
+        echo "Error: nmap could not read the subnet '$subnet'. Set subnet= in $CONFIG_FILE to one or more ranges in CIDR notation, such as 192.168.1.0/24 10.0.20.0/24." >&2
+        return 1
+    fi
+    rm -f "$nmap_err"
 
     local -a scanned=()
     local -A skip=()
