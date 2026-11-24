@@ -26,6 +26,14 @@ teardown() {
     fi
 }
 
+active_pane() {
+    tmux -L "$SOCKET" display -p -t "=$session_name:" "#{$1}"
+}
+
+active_pane_is() {
+    [ "$(active_pane "$1")" = "$2" ]
+}
+
 no_popup_script_running() {
     ! pgrep -f "$SSHL_SRC/popup-$1.sh" >/dev/null
 }
@@ -43,8 +51,129 @@ term_hides() {
         tmux -L "$SOCKET" list-keys -T prefix "$key" | grep -q "bind-key -T prefix $key "
     done
     tmux -L "$SOCKET" list-keys -T prefix S | grep -q 'display-popup -EE'
-    [ "$(tmux -L "$SOCKET" show -gv remain-on-exit)" = "failed" ]
+    [ "$(tmux -L "$SOCKET" show -gv remain-on-exit)" = "on" ]
     [ "$(tmux -L "$SOCKET" show -gv @info_script)" = "$SSHL_SRC/host-info.sh" ]
+}
+
+@test "prefix r: leaves a live pane running and refreshes the host info" {
+    attach_client_in_terminal
+    local pid
+    pid="$(active_pane pane_pid)"
+    term_keys C-b r
+    wait_until 5 term_shows "pane is still running, not respawned. Refreshing fake-host-01"
+    [ "$(active_pane pane_pid)" = "$pid" ]
+    [ "$(active_pane pane_dead)" = "0" ]
+    wait_until 5 test -f "$XDG_RUNTIME_DIR/sshl-host-info/testuser@192.0.2.1"
+}
+
+@test "prefix r: respawns a dead pane" {
+    local marker="$SSHL_DATA_DIR_OVERRIDE/respawned"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" \
+        "if [ -e '$marker' ]; then exec sleep 30; fi; touch '$marker'; exit 3"
+    wait_until 5 active_pane_is pane_dead 1
+    attach_client_in_terminal
+    term_keys C-b r
+    wait_until 5 term_shows "respawned the dead panes, refreshing fake-host-01"
+    wait_until 5 active_pane_is pane_current_command sleep
+    [ "$(active_pane pane_dead)" = "0" ]
+}
+
+@test "dead pane: the pane itself says how to reconnect" {
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 255"
+    wait_until 5 active_pane_is pane_dead 1
+    pane_says_reconnect() {
+        tmux -L "$SOCKET" capture-pane -p -t "=$session_name:.0" | grep -q "^exit 255 .* Ctrl+b r reconnects"
+    }
+    wait_until 5 pane_says_reconnect
+}
+
+@test "prefix r: respawns every dead pane in the window, not only the active one" {
+    local marker="$SSHL_DATA_DIR_OVERRIDE/respawned"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" \
+        "if [ -e '$marker.0' ]; then exec sleep 30; fi; touch '$marker.0'; exit 255"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.1" \
+        "if [ -e '$marker.1' ]; then exec sleep 30; fi; touch '$marker.1'; exit 255"
+    dead_count_is() {
+        [ "$(tmux -L "$SOCKET" list-panes -t "=$session_name:" -F '#{pane_dead}' | grep -c 1)" -eq "$1" ]
+    }
+    wait_until 5 dead_count_is 2
+    attach_client_in_terminal
+    term_keys C-b r
+    wait_until 5 term_shows "respawned the dead panes, refreshing fake-host-01"
+    wait_until 5 dead_count_is 0
+}
+
+@test "a clean exit in both panes keeps the host's window, so it still matches the cache" {
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.1" "exit 0"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 0"
+    dead_count_is_2() {
+        [ "$(tmux -L "$SOCKET" list-panes -t "=$session_name:" -F '#{pane_dead}' | grep -c 1)" -eq 2 ]
+    }
+    wait_until 5 dead_count_is_2
+    [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
+}
+
+@test "status bar: the IP sits after the host name on row 1, once, and not on row 0" {
+    local win row1 right
+    win="$(find_window_id_by_ip 192.0.2.1)"
+    row1="$(tmux -L "$SOCKET" show -gv 'status-format[1]')"
+    right="$(tmux -L "$SOCKET" display -p -t "$win" "$(tmux -L "$SOCKET" show -gv status-right)")"
+    [[ "$right" != *192.0.2.1* ]]
+    [[ "$(tmux -L "$SOCKET" display -p -t "$win" "$row1")" == *"fake-host-01 #[fg=colour244]192.0.2.1#[fg=colour252] "* ]]
+    tmux -L "$SOCKET" set -w -t "$win" @host_name 192.0.2.1
+    [ "$(tmux -L "$SOCKET" display -p -t "$win" "$row1" | grep -o '192\.0\.2\.1' | wc -l)" -eq 1 ]
+}
+
+@test "pane-died: the message names the window" {
+    attach_client_in_terminal
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 3"
+    wait_until 5 term_shows "pane died in fake-host-01. Press <prefix> r to respawn."
+    tmux -L "$SOCKET" show-messages | grep -q "pane died in fake-host-01\."
+}
+
+@test "pane-died: an ssh drop refreshes the host info, a clean exit does not" {
+    local info="$XDG_RUNTIME_DIR/sshl-host-info"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:1.0" "exit 0"
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:0.0" "exit 255"
+    wait_until 5 test -f "$info/testuser@192.0.2.1"
+    [ ! -e "$info/testuser@192.0.2.2" ]
+}
+
+@test "pane-died: a pane that dies before any client attaches writes nothing into a pane" {
+    tmux -L "$SOCKET" respawn-pane -k -t "=$session_name:.0" "exit 3"
+    wait_until 5 active_pane_is pane_dead 1
+    attach_client_in_terminal
+    wait_until 10 term_shows "clients 1"
+    [ "$(tmux -L "$SOCKET" list-panes -s -t "=$session_name" -F '#{pane_in_mode}' | grep -c 1)" -eq 0 ]
+    term_hides "(null)"
+}
+
+# Clicks are sent as SGR mouse reports, as a terminal sends them for a
+# real click, at the cell left of the refresh glyph, on it, and right of it.
+# The glyph moves while a refresh redraws the text before it, so each click
+# waits for an idle status line and finds the glyph again.
+refresh_glyph_cell() {
+    local row line prefix
+    row="$(term_screen | grep -n "↻" | cut -d: -f1)"
+    line="$(term_screen | sed -n "${row}p")"
+    prefix="${line%%↻*}"
+    printf '%s %s' "$(( $(printf %s "$prefix" | wc -m) + 1 ))" "$row"
+}
+
+@test "refresh button: a click on or next to the glyph forces a refresh" {
+    # Without a UTF-8 locale tmux draws the glyph as "_", as any terminal would.
+    export LANG=C.UTF-8 LC_ALL=C.UTF-8
+    attach_client_in_terminal
+    local col row dx
+    for dx in -1 0 1; do
+        tmux -L "$SOCKET" set -g display-time 100
+        wait_until 10 term_hides "refreshing fake-host-01"
+        wait_until 10 term_shows "updates ? ·"
+        tmux -L "$SOCKET" set -g display-time 3000
+        read -r col row <<<"$(refresh_glyph_cell)"
+        term_keys -l $'\e[<0;'"$((col + dx))"';'"$row"'M'$'\e[<0;'"$((col + dx))"';'"$row"'m'
+        wait_until 5 term_shows "refreshing fake-host-01"
+    done
 }
 
 @test "prefix S: a failing popup stays open with its error until Esc" {

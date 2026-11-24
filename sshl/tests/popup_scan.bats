@@ -255,6 +255,32 @@ row_of() {
     ( set -u; later )
 }
 
+@test "popup_scan: a rescan renames a CURRENT host whose name changed" {
+    printf '192.0.2.1\told-name\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    stub_fzf 'cat > /dev/null; exit 130'
+    source "$SSHL_SRC/popup-scan.sh"
+    popup_scan 2> "$SSHL_DATA_DIR_OVERRIDE/err.log"
+    grep -q 'Renamed 192.0.2.1 to fake-host-01.' "$SSHL_DATA_DIR_OVERRIDE/err.log"
+    [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tfake-host-01' ]
+    [ "$(tmux -L "$SOCKET" list-windows -t "=$session_name" -F '#{window_name} #{@host_name}')" = "fake-host-01 fake-host-01" ]
+}
+
+@test "popup_scan: a rescan leaves a host named in the config alone" {
+    echo "host.192.0.2.1.name=pinned" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    unset _SSHL_LIB
+    source "$SSHL_SRC/sshl-lib.sh"
+    printf '192.0.2.1\tpinned\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    stub_fzf 'cat > /dev/null; exit 130'
+    source "$SSHL_SRC/popup-scan.sh"
+    popup_scan 2>/dev/null
+    [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tpinned' ]
+    [ "$(tmux -L "$SOCKET" list-windows -t "=$session_name" -F '#{window_name}')" = "pinned" ]
+}
+
 @test "popup_scan: a host named in the config is listed by that name" {
     echo "host.192.0.2.1.name=pinned" >> "$SSHL_DATA_DIR_OVERRIDE/config"
     unset _SSHL_LIB
@@ -279,6 +305,30 @@ row_of() {
     tmux -L "$SOCKET" capture-pane -t "$pane" -p | grep -Eq '^ ?\+ ?CURRENT +192\.0\.2\.1 '
     tmux -L "$SOCKET" send-keys -t "$pane" Escape
     wait_for_popup_exit "$pane" 0
+}
+
+@test "popup_scan: a CURRENT host the scan did not find is marked in the list" {
+    printf '192.0.2.1\tfake-host-01\n192.0.2.9\tmoved-away\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_fzf 'cat > "$SSHL_DATA_DIR_OVERRIDE/fzf.in"; exit 130'
+    source "$SSHL_SRC/popup-scan.sh"
+    popup_scan 2>/dev/null
+    grep -q '^CURRENT  192.0.2.9 .* moved-away  (not found by this scan)$' "$SSHL_DATA_DIR_OVERRIDE/fzf.in"
+    grep -q '^CURRENT  192.0.2.1 .* fake-host-01$' "$SSHL_DATA_DIR_OVERRIDE/fzf.in"
+}
+
+@test "popup_scan: ticking a CURRENT host the scan did not find removes it without ignoring it" {
+    printf '192.0.2.1\tfake-host-01\n192.0.2.9\tmoved-away\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    stub_fzf 'grep "192.0.2.9"; exit 0'
+    source "$SSHL_SRC/popup-scan.sh"
+    popup_scan 2>/dev/null
+    [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tfake-host-01' ]
+    [ ! -s "$SSHL_DATA_DIR_OVERRIDE/ignored.cache" ]
+    [ "$(live_order)" = "192.0.2.1 " ]
 }
 
 @test "popup_scan: a missing ssh is reported before the scan" {

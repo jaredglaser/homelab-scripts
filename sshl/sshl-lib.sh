@@ -112,8 +112,8 @@ fi
 subnet=""
 session_name="homelab"
 default_user="root"
-left_cmd='ssh {user}@{ip}'
-right_cmd='ssh -t {user}@{ip} htop'
+left_cmd='ssh -o ConnectTimeout=10 -o ServerAliveInterval=15 {user}@{ip}'
+right_cmd='ssh -t -o ConnectTimeout=10 -o ServerAliveInterval=15 {user}@{ip} htop'
 terminal="konsole"
 layout="even-horizontal"
 
@@ -596,4 +596,35 @@ build_session() {
     if (( ${#skipped[@]} > 0 )); then
         echo "Skipped ${#skipped[@]} host(s): $(format_host_list "${skipped[@]}"). Fix the cause above and run 'sshl --rebuild' to retry." >&2
     fi
+}
+
+# A rescan can name a CURRENT host better than when it was added (keys
+# installed since, or a rename). A host.<ip>.name in the config wins.
+refresh_cached_names() {
+    local ip name wid
+    local -a renamed=()
+    local -A old_name=()
+    for ip in "${ips[@]}"; do
+        [[ -z "${host_name[$ip]:-}" ]] || continue
+        name="${discovered_name[$ip]:-}"
+        [[ -n "$name" && "$name" != "${cached_name[$ip]:-}" ]] || continue
+        old_name["$ip"]="${cached_name[$ip]:-}"
+        cached_name["$ip"]="$name"
+        renamed+=("$ip")
+    done
+    (( ${#renamed[@]} > 0 )) || return 0
+    if ! write_cache; then
+        echo "Warning: failed to write $CACHE_FILE, so renamed hosts keep their old names." >&2
+        for ip in "${renamed[@]}"; do cached_name["$ip"]="${old_name[$ip]}"; done
+        return 0
+    fi
+    for ip in "${renamed[@]}"; do
+        name="${cached_name[$ip]}"
+        echo "Renamed $ip to $name." >&2
+        wid="$(find_window_id_by_ip "$ip")"
+        [[ -n "$wid" ]] || continue
+        "${TMUX_CMD[@]}" rename-window -t "$wid" "$name" 2>/dev/null || true
+        "${TMUX_CMD[@]}" set-option -w -t "$wid" @host_name "$name" 2>/dev/null || true
+        "${TMUX_CMD[@]}" select-pane -t "$wid.0" -T "ssh ${host_user[$ip]:-$default_user}@$name" 2>/dev/null || true
+    done
 }
