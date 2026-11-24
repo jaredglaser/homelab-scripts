@@ -13,7 +13,7 @@ description: Run orchestrated PR work on this repo, with one agent per PR, accep
 - A handoff marked ACTIVE, a list of open tasks, or PRs waiting for review does not start it either. Another session may be running that work right now. The maintainer often has more than one session open on this repo.
 - If the request could mean orchestrating, ask first: "Do you want me to take over as orchestrator for <the work>, or is another session handling it?" Wait for the answer.
 - Until he says yes, do not dispatch agents, review or verify PRs, write acceptance criteria, push, open or edit PRs, or rewrite the handoff. Reading the repo and the handoff is fine.
-- When he says yes, write your session into the status line of `homelab-scripts/handoff.md` in the records repo before dispatching anything, so other sessions can see who holds the role.
+- When he says yes, take the role in the records repo before dispatching anything. Run `git pull --ff-only`, then read line 1 of `homelab-scripts/handoff.md`. If it says ACTIVE with a session other than yours, stop and ask the maintainer, and do not replace it. Take the role only when it says IDLE or the maintainer names the session you are replacing. Then commit and push the new line 1 (`ACTIVE: <session URL>, since <date>`) before anything else. If the push is rejected, pull with `--ff-only` and re-read line 1. Never force-push the records repo.
 
 ## The role
 
@@ -30,15 +30,16 @@ The main Claude session acts as **orchestrator**. It does not do PR work itself.
 
 The maintainer approves and merges. Agents never merge.
 
-A PR is approval-ready only when every acceptance criterion has a recorded result with proof (section 6). Review findings being resolved is not enough.
+A PR is approval-ready only when every acceptance criterion is `pass` at the head SHA, with a recorded result and proof (section 6). Review findings being resolved is not enough. A `not run` row keeps the PR out of approval-ready until the maintainer accepts that row in the session. Tell him "ready with N not run", never "ready".
 
-**Everything runs in this cloud box.** Agents, reviewers, and verifiers never use the maintainer's computer. The box's setup script is `environment/setup.sh` in the records repo.
+**Everything runs in this cloud box.** Agents, reviewers, and verifiers never use the maintainer's computer. `environment/setup.sh` in the records repo is the box's setup script. It installs homelab-manager's dependencies and the maintainer's personal instructions, and none of this repo's tools, so section 0 installs those.
 
 ## 0. Start of session
 - **Base clone:** the session's checkout of this repo. A session with more than one repository starts in their parent directory, so do not rely on the working directory or on Docker already running. Find the checkout (`git rev-parse --show-toplevel`, or the directory that holds this skill's `.claude/`) and `cd` into it.
-- `mkdir -p /home/claude/work`, then check the box: `nproc`, `free -g`, and `command -v shellcheck bats tmux fzf docker`. Install what a check needs, as the workflows in `.github/workflows/` do. The proof types the box can produce follow from this (section 2).
-- **Docker** is needed for the `e2e` and `lab` proof types. It is started by `scripts/cloud/session-start.sh` in the homelab-manager checkout, so when that checkout is attached, run `bash scripts/cloud/session-start.sh` from it. The script sets a registry mirror, without which Docker Hub answers 429. Never have a harness or a check start its own daemon. If that checkout is not attached and Docker is not running, `e2e` and `lab` cannot be produced: tell the maintainer.
-- The box runs as uid 0. The pve bats suite is run as an unprivileged user (for example `setpriv --reuid 65534 --regid 65534 --clear-groups bats ...`). The memory rules in sections 4 and 5 assume a small box. Loosen them only if the box clearly has room.
+- `mkdir -p /home/claude/work`, then check the box: `nproc`, `free -g`, and `command -v shellcheck bats tmux fzf docker`. Install `shellcheck`, `bats`, `tmux` and `fzf` with the package manager if `command -v` finds them missing. The proof types the box can produce follow from this (section 2).
+- **Docker** is needed for the `e2e` and `lab` proof types. When the homelab-manager checkout is attached, run `bash scripts/cloud/session-start.sh` from it: it starts Docker with a registry mirror, without which Docker Hub answers 429. When it is not attached and `pgrep -x dockerd` finds nothing, start Docker yourself with `nohup dockerd --registry-mirror=https://mirror.gcr.io > /home/claude/work/dockerd.log 2>&1 &`, then wait until `docker info` succeeds. Only the orchestrator starts Docker. Never have a harness or a check start its own daemon.
+- The box runs as uid 0, and root ignores file modes, so the pve bats suite's permission fixtures pass without testing anything. Run that suite as an unprivileged user (for example `setpriv --reuid 65534 --regid 65534 --clear-groups bats ...`). The clone must be readable by that uid and the suite needs a writable `TMPDIR`.
+- The memory rules in sections 4 and 5 assume a small box. Loosen them only if the box clearly has room.
 - **Records clone:** a separate records repo holds the handoff, criteria and evidence (section 9). The environment variable `HLM_RECORDS_REPO` names it as `owner/name`. This repo's records are under `homelab-scripts/` in it. Use the session's checkout of it, or clone it to `/home/claude/work/records`. If the session cannot reach the repo and has a tool for adding a repository to the session, add it with push access. If the variable is unset or the repo is still unreachable, stop and ask the maintainer where records go before doing anything else.
 - Fetch the working branches into the base clone, one at a time, because the git proxy allows 2 concurrent operations:
   `git -C <base> fetch --depth 200 origin "+refs/heads/<branch>:refs/remotes/origin/<branch>"`
@@ -51,7 +52,7 @@ A PR is approval-ready only when every acceptance criterion has a recorded resul
   git checkout -B <branch> origin/<branch>
   mkdir -p /home/claude/work/<slug>-meta
   ```
-- **Docker-heavy checks run one at a time:** the pve end-to-end check and the sshl lab each start containers, so no two run together (section 5).
+- **Docker-heavy checks run one at a time:** the pve end-to-end check and the sshl lab, where the repo has them, each start containers, so no two run together (section 5).
 
 ## 1. Survey
 - List the open PRs via REST (`repos/jaredglaser/homelab-scripts/pulls?state=open`), using whichever of `gh api` or the GitHub MCP tools the session has. GraphQL is unavailable in these sessions, so `gh pr view/checks/edit` fail.
@@ -63,31 +64,33 @@ A PR is approval-ready only when every acceptance criterion has a recorded resul
   - file list
   - stacking: the base branch is not `main`, or the PR contains another PR's commits
 - Test-merge in a scratch clone, in the proposed order, to find conflicts.
+- Note which open PRs edit the same shared file (`sshl/sshl-lib.sh`, `sshl/homelab.tmux.conf`, `CLAUDE.md`, a workflow): those must stack.
 - Propose a merge order, and flag anything to defer or close.
 
 ## 2. Acceptance criteria (before any agent starts)
 The orchestrator writes the criteria. The agent that will do the work does not write its own.
 
-- **Per PR or task, 3 to 8 criteria**, each one observable from outside the code: what a user, operator, or CI run sees. "Refactor X" is not a criterion. "A host that accepts the connection and never answers stops showing as loading" is.
+- **Per PR or task, 3 to 8 criteria**, each one observable from outside the code: what a user, operator, or CI run sees. "Refactor X" is not a criterion. "Running `<script>` with a missing config file prints the error and exits 1" is.
 - **Each criterion gets an ID and a proof type**, chosen before the work starts:
   - `bats`: a named bats test that fails with the source change reverted
-  - `e2e`: the pve end-to-end check, against real Proxmox packages in a Debian container
-  - `lab`: the sshl lab, real SSH hosts in Docker and a konsole on a virtual display, with a screenshot per criterion
+  - `e2e`: the pve end-to-end check, which must run against real Proxmox packages in a Debian container
+  - `lab`: the sshl lab, which must use real SSH hosts in Docker and a konsole on a virtual display, with a screenshot per criterion
   - `ci`: a specific CI job and step, for things only CI can show
   - `run`: a command and its output (`shellcheck` on a script, a script run on a violating and a clean input)
-- **Pick a proof type the box can produce.** `e2e` and `lab` need Docker running and their images and packages reachable (section 0). If one is unavailable, prefer a CI job that exercises the same thing.
+- **Pick a proof type the box can produce.** `e2e` and `lab` need Docker running and their images and packages reachable (section 0). If one is unavailable, a CI job can stand in only if it installs the real package or starts the real hosts. A job that runs bats against stubs proves only `bats` criteria. Name the job and step in the Proof column.
+- **The harness comes from the PR's head.** The entry point and README of the pve check and the lab are the ones in the repo at the PR's head, named in the Testing section of `CLAUDE.md`. If the head has no such harness, the proof type is unavailable for that PR: record `not run`, name the missing script, and do not write a harness to produce the proof. A PR that adds or changes a harness is reviewed as code.
 - **Include what must not change.** At least one criterion per PR names existing behaviour the change sits next to and could break.
 - **Sources, in order:** the linked issue, the PR body, the maintainer's request, then the diff. For an existing PR with no stated intent, derive the criteria from the diff and mark them `derived`.
 - **Write them to** `/home/claude/work/pr-<N>-meta/criteria.md` and to `homelab-scripts/criteria/pr-<N>.md` in the records repo. A unit of work with no PR number yet gets a criteria file named after its branch.
 - **Send the maintainer all criteria in one message at the start.** Agents start immediately on PRs whose criteria restate a stated intent. A PR with `derived` criteria, or one where the orchestrator had to choose between readings, waits for the maintainer's answer on that PR only.
 - **Criteria change only through the orchestrator.** An agent that finds a criterion wrong or impossible raises it. A changed criterion is noted in the evidence table with the reason.
 
-Format:
+Format (placeholders show the form, they are not real criteria):
 
 ```
-AC1 [bats] A host that accepts the connection and never answers ends its fetch within the time limit, and a later call starts a new fetch.
-AC2 [lab] The host row shows the new status after a rescan, in the konsole.
-AC3 [bats, must-not-change] A host that answers in time still shows its info as before.
+AC1 [bats] Running `<script>` with `<input>` prints `<message>` and exits `<code>`.
+AC2 [lab] After `<action>`, the konsole shows `<result>`.
+AC3 [bats, must-not-change] `<Existing behaviour next to the change>` still works as before.
 ```
 
 ## 3. Dispatch one agent per PR or task
@@ -120,9 +123,9 @@ Per-PR agents cannot spawn subagents, so they cannot run a multi-agent review th
   - at least two independent adversarial `general-purpose` reviewers that have not seen each other's output, each told to try to break the change with concrete scenarios
   - for test-only PRs, mutation testing that compares which mutations are caught on `main` against the PR
 - **Small PR:** one review pass plus one adversarial pass.
-- **Test changes get a mutation check.** A test must fail when the line it covers is removed, and must not stub the tool it claims to exercise. The reviewer picks a sample of the new or changed tests, removes the covered line in a scratch clone, and confirms the test fails.
-- **Nothing about the machine a change was written on may be in the diff:** proxy handling, sandbox paths, rate-limit fallbacks.
-- **All reviewers are read-only.** They must not start Docker, the pve end-to-end check or the sshl lab, because the box runs out of memory when many agents run. They run `shellcheck`, `bash -n` and targeted bats files only, and the pve suite as an unprivileged user. Never print a whole log.
+- **Test changes get a mutation check.** A test must fail when the line it covers is removed. Stubs for external hosts and system tools (`ssh`, `nmap`, `dpkg-query`) are fine, as the Testing section of `CLAUDE.md` describes, but the script under test runs for real, and so does the tool a test names as its subject. The reviewer picks a sample of the new or changed tests, removes the covered line in a scratch copy of its own, and confirms the test fails on its own assertion.
+- **Check the diff for traces of the machine it was written on** (section 5). Scan the added lines: `git diff origin/<base>...HEAD | grep -E '^\+' | grep -niE 'proxy|ca-bundle|\.crt|/home/claude|/root/|/tmp/|cloud|sandbox|429|claude\.ai/code'`. Every hit is explained or removed.
+- **All reviewers are read-only.** They must not start Docker, the pve end-to-end check or the sshl lab, because the box runs out of memory when many agents run. They run `shellcheck`, `bash -n` and targeted bats files only, and the pve suite as section 0 says. They may edit only a scratch copy of their own, never a PR clone. Never print a whole log.
 - **The orchestrator verifies findings itself** before passing them on (for example, by reproducing a claimed shell or tool behavior). It sends the valid ones back to the owning agent as one list, and keeps decisions that belong to the maintainer out of that list.
 - **After a substantial round of fixes,** run one more adversarial pass on just the new commits. Repeat until a pass finds nothing serious.
 
@@ -131,23 +134,23 @@ Review reads the code. It does not count as proof for any criterion.
 ## 5. Behavioural verification (run by the orchestrator, one PR at a time)
 This step runs the change. It starts for a PR once its review findings are resolved and CI is green.
 
-- **One verifier at a time, and only while no other agent is running Docker or a full bats suite.** The e2e check and the lab need the memory that parallel agents use up. Queue PRs bottom of each stack first.
+- **One verifier at a time, and only while no other agent is running Docker.** The e2e check and the lab need the memory that parallel agents use up. Queue PRs bottom of each stack first.
 - **The verifier is a fresh `general-purpose` agent.** It gets the PR number, the head SHA, and the criteria. It does not get the owner agent's report or the review findings, so it tests what was asked for, not what the author says was built.
 - **It works in its own clone** at `/home/claude/work/verify-<N>`, checked out at the head SHA, and writes evidence to `/home/claude/work/pr-<N>-meta/evidence/`.
 - **It never edits the PR.** It reports. Fixes go back to the owner agent.
-- **It installs what the checks need,** and starts Docker the way section 0 says if it is no longer running.
+- **It installs what the checks need,** and checks `docker info` first. If Docker is down it stops and reports, and the orchestrator restarts it as section 0 says.
 - **A substitute is not verification.** When the real package, distro or host a criterion names cannot be reached, name the blocked host or tool and stop. Do not build a stand-in: no fake package, no stubbed repository, no local imitation of a Proxmox node or an SSH host. Record the criterion as `not run` with the blocked host.
-- **Nothing about the machine the check ran on goes into the repo.** Proxy handling, sandbox paths and rate-limit fallbacks stay out of scripts, tests and READMEs. If a check needs the box to behave differently, that belongs in the records repo, not in the PR.
+- **Nothing about the machine the check ran on goes into the repo.** Proxy handling, sandbox paths and rate-limit fallbacks stay out of scripts, tests and READMEs. If a check needs the box to behave differently, record that box fact in the handoff's Notes or in `environment/` in the records repo, not in the PR.
 
 **How each proof type is produced**
-- `bats`: run the named test on the PR head and confirm it passes. Then revert the source change in the scratch clone (keep the test) and confirm the test fails. A test that passes both ways proves nothing, and is reported as a failed criterion. The commands are in the Testing section of this repo's `CLAUDE.md`. Run the pve suite as an unprivileged user.
-- `e2e`: run the pve end-to-end check at the PR head, following its README under `pve-zfs-large-block-patch/tests/`. It installs real Proxmox packages into a Debian container and runs the PR's own script against them. Save the command, the trimmed output, and the installed package versions. If the Proxmox or Debian package host is unreachable, do not substitute fake packages: record the criterion as `not run` and name the host. If a CI job exercises the same thing, record that as `ci` proof instead.
-- `lab`: bring up the sshl lab at the PR head, following its README under `sshl/tests/`: real SSH hosts in Docker and a konsole on a virtual display. Install what it needs on the box. Drive the criterion in the konsole and save one screenshot per criterion at the moment that shows the result, plus the relevant log lines. If the lab cannot start in the box, do not mock the hosts and do not move the check to the maintainer's computer. Record the criterion as `not run` with the reason.
-- `ci`: record the job, step, run URL, and the log lines that show it.
+- `bats`: run the named test on the PR head and confirm its TAP line starts `ok` with no `# skip`: a skipped test is not a pass. Then revert the source change in the scratch clone (keep the test) and confirm the test fails on its own assertion, not because the script no longer parses or a file is missing. A test that passes both ways, or fails for another reason, proves nothing, and is reported as a failed criterion. The commands are in the Testing section of this repo's `CLAUDE.md`. Run the pve suite as section 0 says.
+- `e2e`: run the pve end-to-end check at the PR head, using the entry point and README the repo has at that head (section 2). It installs real Proxmox packages into a Debian container and runs the PR's own script against them. Save the command, the trimmed output, and the installed package versions. If a package host is unreachable, the substitute rule above applies. A CI job stands in only as section 2 says.
+- `lab`: bring up the sshl lab at the PR head, using the entry point and README the repo has at that head: real SSH hosts in Docker and a konsole on a virtual display. Install what it needs on the box. Drive the criterion in the konsole and save one screenshot per criterion at the moment that shows the result, plus the relevant log lines. If the lab cannot start in the box, the substitute rule above applies, and the check does not move to the maintainer's computer.
+- `ci`: record the job, step, run URL, and the log lines that show it. For a criterion typed `e2e` or `lab`, the job must install the real package or start the real hosts.
 - `run`: record the command and its output, trimmed to the lines that matter. For a guard or a check, show it failing on a violating input and passing on a clean one. `shellcheck` and `bash -n` count here.
 
 **Results**
-- Each criterion ends as `pass`, `fail`, or `not run`, with a pointer to its proof. There is no "looks fine".
+- Each criterion ends as `pass`, `fail`, or `not run`, with a pointer to its proof. There is no "looks fine". A `not run` is not a pass.
 - A `fail` goes to the owner agent with the evidence. After the fix, the verifier re-runs the failed criteria and every criterion that touches the files the fix changed, on the new head SHA.
 - Anything the verifier notices outside the criteria (an error in the output, a broken neighbouring flow) is reported as an observation, with a screenshot where there is one, and the orchestrator decides whether it is in scope.
 - Evidence is tied to a head SHA. A push after verification makes it stale. Re-run the criteria the new commits could affect, and say which were re-run.
@@ -161,19 +164,19 @@ The maintainer reviews the evidence, not a summary of it.
 ## Acceptance (verified at <head SHA>)
 | ID | Criterion | Proof | Result |
 |---|---|---|---|
-| AC1 | A host that never answers ends its fetch... | bats: `sshl/tests/lib.bats` "<test name>", fails with source reverted | pass |
-| AC2 | The host row shows the new status after a rescan | lab: evidence page, AC2 screenshot | pass |
-| AC3 | A host that answers in time still shows its info | bats: `sshl/tests/lib.bats` "<test name>", passes on head | pass |
+| AC1 | Running `<script>` with `<input>` prints `<message>`... | bats: `<file>.bats` "<test name>", fails with source reverted | pass |
+| AC2 | After `<action>`, the konsole shows `<result>` | lab: evidence page, AC2 screenshot | pass |
+| AC3 | `<Existing behaviour>` still works as before | bats: `<file>.bats` "<test name>", passes on head | pass |
 ```
 
 - **Screenshots, logs, and long output go in the records repo,** under `homelab-scripts/evidence/pr-<N>/<short head SHA>/`, with a `README.md` that has one heading per criterion and shows its screenshots and trimmed output. The box does not survive the session, so the records repo is the durable copy. The Proof column links to the criterion's heading there. The link opens only for people with access to the records repo.
-- **`not run` and `fail` rows are never dropped.** They go at the top of that PR's entry in the wrap-up, with the reason and what would close them.
+- **`not run` and `fail` rows are never dropped.** They go at the top of that PR's entry in the wrap-up, with the reason and what would close them. A `not run` row keeps the PR out of approval-ready until the maintainer accepts it.
 - **A PR with no table, or a table at a different SHA than the head, is not approval-ready.** The final sweep checks this.
 
 ## 7. Coordination
 - When a base or stacked branch moves, tell the dependent agents to merge it in, bottom of the stack first. Never rebase.
 - When something changes under another PR (a renamed function in a shared library script, a moved test helper, a changed config key), tell the affected agent so its conflict plan stays current.
-- Tell the maintainer a PR is ready to approve only after its agent has finished pushing, because a push after verification makes the evidence stale.
+- Tell the maintainer a PR is ready to approve only after its agent has finished pushing, because a push after verification makes the evidence stale. Say "ready with N not run" when any row is `not run`.
 - **Before the wrap-up,** do a final sweep of every open PR. Check the head SHA, that every check group has a success, that the branch is 0 behind its base, and that it is mergeable. Check that each PR body still matches its PR, and that its Acceptance table is at the head SHA.
 
 ## 8. Talking to the maintainer
@@ -185,7 +188,7 @@ The maintainer reviews the evidence, not a summary of it.
 - Bring a decision with each option's concrete impact (what it changes, what it costs, what it locks in) and a recommendation.
 
 ## 9. Records (handoff, criteria, evidence)
-Session records live in the records repo named by `HLM_RECORDS_REPO`, under `homelab-scripts/`, not in this repo. Only the session holding this repo's orchestrator role writes to `homelab-scripts/`, and it writes to no other repo's records. Agents write to their meta folders and the orchestrator copies what belongs in the records.
+Session records live in the records repo named by `HLM_RECORDS_REPO`, under `homelab-scripts/`, not in this repo. Only the session holding this repo's orchestrator role writes to `homelab-scripts/` and the shared files named below, and it writes to no other repo's records. Agents write to their meta folders and the orchestrator copies what belongs in the records.
 
 Read the records repo's `README.md` first and follow it. It describes the layout, and `templates/` there holds the starting point for each file. The criteria template lists homelab-manager's proof types: use this repo's (`bats`, `e2e`, `lab`, `ci`, `run`).
 
@@ -198,7 +201,7 @@ homelab-scripts/designs/                          design plans and the decisions
 ```
 
 - The first line of `homelab-scripts/handoff.md` is the status line: `ACTIVE: <session URL>, since <date>` or `IDLE`.
-- Run `git pull --ff-only` before every write. Commit straight to the records repo's `main` and push. If the pull shows that another session changed `homelab-scripts/handoff.md` while this one holds the role, stop and tell the maintainer. Another repo's records changing is expected and is not a reason to stop. A shared file (`README.md`, `templates/`, `environment/`) may be changed by either orchestrator: say so in the commit subject.
+- Run `git pull --ff-only` before every write. Commit straight to the records repo's `main` and push. If a push is rejected, pull with `--ff-only` and re-read line 1 of `homelab-scripts/handoff.md`, and never force-push. If the pull shows that another session changed `homelab-scripts/handoff.md` while this one holds the role, stop and tell the maintainer. Another repo's records changing is expected and is not a reason to stop. A shared file (`README.md`, `templates/`, `environment/`) may be changed by either orchestrator: say so in the commit subject.
 - Keep `handoff.md` current throughout, so a new session can resume without the old context. It carries the task, the merge order, each PR's tier, criteria and current results, open questions for the maintainer, and links to the evidence.
 - At the wrap-up, copy `handoff.md` to `archive/`, then reset it from the template with the status line `IDLE`.
 - Questions and findings go to the maintainer in the session first. For a decision, a follow-up or an environment problem that is still open when the session ends, open an issue in the records repo from its matching template and link it from `handoff.md`.
