@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 # Run nmap, present a multi-select fzf where each row carries an
 # explicit action tag: CURRENT (already a window) or NEW (just found).
@@ -167,7 +168,6 @@ apply_scan_diff() {
         done
     fi
 
-    refresh_session_options
     echo "Added ${#_to_add[@]}, removed ${#_to_remove[@]}." >&2
     if (( ${#no_window[@]} > 0 )); then
         echo "No window for ${#no_window[@]} host(s): $(format_host_list "${no_window[@]}")." >&2

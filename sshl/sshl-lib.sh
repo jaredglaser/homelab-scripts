@@ -1,19 +1,19 @@
+# shellcheck shell=bash
 # Shared library for sshl and the popup scripts. Source this. Do not execute directly.
 [[ -n "${_SSHL_LIB:-}" ]] && return 0
 _SSHL_LIB=1
 
-SSHL_DIR="${SSHL_DIR_OVERRIDE:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-# SSHL_BIN must be set by the calling script before sourcing this lib.
-# Popup scripts don't set it (they never call set_session_options), so
-# default to empty to satisfy set -u without breaking their use case.
-SSHL_BIN="${SSHL_BIN:-}"
+# Scripts and the tmux conf live next to this file. The config and the
+# caches live in SSHL_DATA_DIR, which only the tests move.
+SSHL_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SSHL_DATA_DIR="${SSHL_DATA_DIR_OVERRIDE:-$SSHL_DIR}"
 
-CONFIG_FILE="${SSHL_DIR}/config"
+CONFIG_FILE="${SSHL_DATA_DIR}/config"
 TMUX_CONF="${SSHL_DIR}/homelab.tmux.conf"
 PICKER="${SSHL_DIR}/host-picker.sh"
 INFO_SCRIPT="${SSHL_DIR}/host-info.sh"
-CACHE_FILE="${SSHL_DIR}/ips.cache"
-IGNORED_FILE="${SSHL_DIR}/ignored.cache"
+CACHE_FILE="${SSHL_DATA_DIR}/ips.cache"
+IGNORED_FILE="${SSHL_DATA_DIR}/ignored.cache"
 SOCKET="${SSHL_SOCKET_OVERRIDE:-homelab}"
 TMUX_CMD=(tmux -L "$SOCKET")
 
@@ -155,18 +155,11 @@ _write_host_file() {
 }
 
 write_cache() {
-    _write_host_file "$CACHE_FILE" ips cached_name || return 1
-    update_cache_mtime_option
+    _write_host_file "$CACHE_FILE" ips cached_name
 }
 
 write_ignored() {
     _write_host_file "$IGNORED_FILE" ignored_ips ignored_name
-}
-
-update_cache_mtime_option() {
-    local mtime
-    mtime=$(stat -c %Y "$CACHE_FILE" 2>/dev/null || stat -f %m "$CACHE_FILE" 2>/dev/null) || return 0
-    "${TMUX_CMD[@]}" set-option -g @cache_mtime "$mtime" 2>/dev/null || true
 }
 
 declare -ga discovered_ips=()
@@ -304,32 +297,20 @@ find_window_id_by_ip() {
         | awk -v ip="$target" '$2 == ip {print $1; exit}'
 }
 
+# The status bar and prefix r read @info_script as a format.
 set_session_options() {
-    "${TMUX_CMD[@]}" set-option -g @subnet         "$subnet"
-    "${TMUX_CMD[@]}" set-option -g @cache_file     "$CACHE_FILE"
-    "${TMUX_CMD[@]}" set-option -g @ignored_file   "$IGNORED_FILE"
-    "${TMUX_CMD[@]}" set-option -g @sshl_bin       "$SSHL_BIN"
-    "${TMUX_CMD[@]}" set-option -g @picker_script  "$PICKER"
-    "${TMUX_CMD[@]}" set-option -g @info_script    "$INFO_SCRIPT"
-    "${TMUX_CMD[@]}" set-option -g @default_layout "$layout"
-    update_cache_mtime_option
+    "${TMUX_CMD[@]}" set-option -g @info_script "$INFO_SCRIPT"
     set_session_env
 }
 
-# Mirror the @var options into the global tmux environment. The popup
-# key bindings need these as shell variables ($SSHL_DIR etc.) because
-# display-popup -E does NOT format-expand its shell-command despite
-# what the docs imply, so #{@sshl_bin} would reach the spawned shell as a
-# literal string. Newly-spawned panes (popups included) inherit this
-# global env, so by the time prefix S fires the popup's shell already
-# has $SSHL_DIR set.
+# The popup key bindings read these as shell variables because
+# display-popup does not format-expand its shell-command, so #{@var}
+# would reach the popup's shell as a literal string. Popups inherit
+# tmux's global environment when they spawn.
 set_session_env() {
-    "${TMUX_CMD[@]}" set-environment -g SSHL_BIN     "$SSHL_BIN"     2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_DIR     "$SSHL_DIR"     2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_CACHE   "$CACHE_FILE"   2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_IGNORED "$IGNORED_FILE" 2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_PICKER  "$PICKER"       2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_INFO    "$INFO_SCRIPT"  2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_DIR    "$SSHL_DIR"   2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_CACHE  "$CACHE_FILE" 2>/dev/null || true
+    "${TMUX_CMD[@]}" set-environment -g SSHL_PICKER "$PICKER"     2>/dev/null || true
 }
 
 # Add a window for a host. With --first, opens the session via
@@ -349,17 +330,16 @@ add_window() {
     right_title="${host_right_cmd[$ip]:-$right_cmd}"
     right_title="${right_title%% *}"
 
-    local env_args=(-e "HOST_IP=$ip" -e "HOST_NAME=$name" -e "HOST_USER=$user")
     local wid
     if $first; then
         wid=$("${TMUX_CMD[@]}" -f "$TMUX_CONF" new-session -d -s "$session_name" \
-            -n "$name" -P -F '#{window_id}' "${env_args[@]}" "$left") || {
+            -n "$name" -P -F '#{window_id}' "$left") || {
             echo "Warning: failed to open the session with $ip ($name), skipping" >&2
             return 1
         }
     else
         wid=$("${TMUX_CMD[@]}" new-window -t "=$session_name:" -n "$name" \
-            -P -F '#{window_id}' "${env_args[@]}" "$left") || {
+            -P -F '#{window_id}' "$left") || {
             echo "Warning: failed to create window for $ip ($name), skipping" >&2
             return 1
         }
@@ -376,7 +356,7 @@ add_window() {
 
     # Structural: the right pane is core to the per-host UI. If it
     # fails, kill the partial window rather than leave half a layout.
-    if ! "${TMUX_CMD[@]}" split-window -h -t "$wid" "${env_args[@]}" "$right" 2>/dev/null \
+    if ! "${TMUX_CMD[@]}" split-window -h -t "$wid" "$right" 2>/dev/null \
        || ! "${TMUX_CMD[@]}" select-layout -t "$wid" "$layout" 2>/dev/null; then
         echo "Warning: pane layout failed for $ip ($name), killing partial window" >&2
         "${TMUX_CMD[@]}" kill-window -t "$wid" 2>/dev/null || true
@@ -419,7 +399,6 @@ wait_for_server_exit() {
     done
 }
 
-# "ip (name), ip (name)" for the hosts given, for messages that name them.
 format_host_list() {
     local out="" ip
     for ip in "$@"; do
@@ -437,7 +416,7 @@ build_session() {
     wait_for_server_exit
 
     if [[ ${#ips[@]} -eq 0 ]]; then
-        echo "Error: cache is empty; nothing to build." >&2
+        echo "Error: the cache is empty, so there is nothing to build." >&2
         return 1
     fi
 
@@ -463,7 +442,7 @@ build_session() {
         return 1
     fi
 
-    "${TMUX_CMD[@]}" select-window -t "$session_name:^"
+    "${TMUX_CMD[@]}" select-window -t "=$session_name:^"
     # Set last so an aborted build leaves the marker unset. The next
     # session_is_healthy check then forces a clean rebuild.
     "${TMUX_CMD[@]}" set-option -g @build_complete 1
@@ -471,11 +450,4 @@ build_session() {
     if (( ${#skipped[@]} > 0 )); then
         echo "Skipped ${#skipped[@]} host(s): $(format_host_list "${skipped[@]}"). Fix the cause above and run 'sshl --rebuild' to retry." >&2
     fi
-}
-
-# Update @cache_mtime after popup-driven cache writes so the status
-# bar reflects the new write time.
-refresh_session_options() {
-    session_exists || return 0
-    update_cache_mtime_option
 }

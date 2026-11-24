@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Fake nmap for tests. Parses -oG <path> from args and writes two fake hosts.
+# Fake nmap for tests. Writes two fake hosts to the -oG <path> file and
+# prints their scan report lines the way nmap's normal output does.
 output_file=""
 args=("$@")
 for i in "${!args[@]}"; do
@@ -15,4 +16,20 @@ Host: 192.0.2.1 ()	Ports: 22/open/tcp//ssh///
 Host: 192.0.2.2 ()	Ports: 22/open/tcp//ssh///
 EOF
 fi
+cat << 'EOF'
+Starting Nmap 7.94 ( https://nmap.org )
+Nmap scan report for 192.0.2.1
+Host is up.
+
+PORT   STATE SERVICE
+22/tcp open  ssh
+
+Nmap scan report for 192.0.2.2
+Host is up.
+
+PORT   STATE SERVICE
+22/tcp open  ssh
+
+Nmap done: 256 IP addresses (2 hosts up) scanned in 0.50 seconds
+EOF
 exit 0

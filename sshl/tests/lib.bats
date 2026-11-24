@@ -23,7 +23,7 @@ load test_helper
 }
 
 @test "read_cache: parses ip and name from tab-separated file" {
-    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
+    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     [ "${ips[0]}" = "192.0.2.1" ]
     [ "${ips[1]}" = "192.0.2.2" ]
@@ -32,14 +32,14 @@ load test_helper
 }
 
 @test "read_cache: skips blank lines" {
-    printf '\n192.0.2.1\tfake-host-01\n\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
+    printf '\n192.0.2.1\tfake-host-01\n\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     [ "${#ips[@]}" = "1" ]
     [ "${ips[0]}" = "192.0.2.1" ]
 }
 
 @test "read_cache: returns empty arrays when cache file is absent" {
-    rm -f "$SSHL_DIR_OVERRIDE/ips.cache"
+    rm -f "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     [ "${#ips[@]}" = "0" ]
 }
@@ -60,11 +60,11 @@ load test_helper
 @test "write_cache: produces empty file when ips array is empty" {
     ips=()
     write_cache
-    [ ! -s "$SSHL_DIR_OVERRIDE/ips.cache" ]
+    [ ! -s "$SSHL_DATA_DIR_OVERRIDE/ips.cache" ]
 }
 
 @test "read_ignored: parses ignored ips and names" {
-    printf '192.0.2.9\told-host\n' > "$SSHL_DIR_OVERRIDE/ignored.cache"
+    printf '192.0.2.9\told-host\n' > "$SSHL_DATA_DIR_OVERRIDE/ignored.cache"
     read_ignored
     [ "${ignored_ips[0]}" = "192.0.2.9" ]
     [ "${ignored_name[192.0.2.9]}" = "old-host" ]
@@ -119,7 +119,7 @@ load test_helper
 }
 
 @test "read_ignored: succeeds when the last line has no name" {
-    printf '192.0.2.9\told-host\n192.0.2.10\t\n' > "$SSHL_DIR_OVERRIDE/ignored.cache"
+    printf '192.0.2.9\told-host\n192.0.2.10\t\n' > "$SSHL_DATA_DIR_OVERRIDE/ignored.cache"
     read_ignored
     [ "${#ignored_ips[@]}" = "2" ]
     [ "${ignored_ips[1]}" = "192.0.2.10" ]
@@ -128,26 +128,26 @@ load test_helper
 # The writers stage into "<file>.tmp.$$". Pointing that path at /dev/full
 # makes every write fail with ENOSPC, which chmod cannot do for root.
 @test "write_cache: a failed write returns non-zero and keeps the old cache" {
-    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
-    before=$(cat "$SSHL_DIR_OVERRIDE/ips.cache")
+    printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    before=$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")
     read_cache
-    ln -s /dev/full "$SSHL_DIR_OVERRIDE/ips.cache.tmp.$$"
+    ln -s /dev/full "$SSHL_DATA_DIR_OVERRIDE/ips.cache.tmp.$$"
     if write_cache; then rc=0; else rc=1; fi
     [ "$rc" -eq 1 ]
-    [ ! -L "$SSHL_DIR_OVERRIDE/ips.cache" ]
-    [ "$(cat "$SSHL_DIR_OVERRIDE/ips.cache")" = "$before" ]
-    [ ! -L "$SSHL_DIR_OVERRIDE/ips.cache.tmp.$$" ]
+    [ ! -L "$SSHL_DATA_DIR_OVERRIDE/ips.cache" ]
+    [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = "$before" ]
+    [ ! -L "$SSHL_DATA_DIR_OVERRIDE/ips.cache.tmp.$$" ]
 }
 
 @test "write_ignored: a failed write returns non-zero and keeps the old file" {
-    printf '192.0.2.9\told-host\n' > "$SSHL_DIR_OVERRIDE/ignored.cache"
+    printf '192.0.2.9\told-host\n' > "$SSHL_DATA_DIR_OVERRIDE/ignored.cache"
     read_ignored
-    ln -s /dev/full "$SSHL_DIR_OVERRIDE/ignored.cache.tmp.$$"
+    ln -s /dev/full "$SSHL_DATA_DIR_OVERRIDE/ignored.cache.tmp.$$"
     if write_ignored; then rc=0; else rc=1; fi
     [ "$rc" -eq 1 ]
-    [ ! -L "$SSHL_DIR_OVERRIDE/ignored.cache" ]
-    [ "$(cat "$SSHL_DIR_OVERRIDE/ignored.cache")" = $'192.0.2.9\told-host' ]
-    [ ! -L "$SSHL_DIR_OVERRIDE/ignored.cache.tmp.$$" ]
+    [ ! -L "$SSHL_DATA_DIR_OVERRIDE/ignored.cache" ]
+    [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ignored.cache")" = $'192.0.2.9\told-host' ]
+    [ ! -L "$SSHL_DATA_DIR_OVERRIDE/ignored.cache.tmp.$$" ]
 }
 
 @test "scan_subnet: keeps hosts that neither ssh nor reverse DNS can name" {
@@ -195,17 +195,17 @@ esac'
 
 @test "scan_subnet: ignored IPs are skipped before their names are resolved" {
     # shellcheck disable=SC2016  # expanded by the stub, not here
-    stub_cmd ssh 'printf "%s\n" "$*" >> "$SSHL_DIR_OVERRIDE/ssh.log"; echo name'
+    stub_cmd ssh 'printf "%s\n" "$*" >> "$SSHL_DATA_DIR_OVERRIDE/ssh.log"; echo name'
     ignored_ips=("192.0.2.1")
     scan_subnet
     [ "${discovered_ips[*]}" = "192.0.2.2" ]
-    run grep '192\.0\.2\.1' "$SSHL_DIR_OVERRIDE/ssh.log"
+    run grep '192\.0\.2\.1' "$SSHL_DATA_DIR_OVERRIDE/ssh.log"
     [ "$status" -ne 0 ]
 }
 
 @test "read_cache and read_ignored: a cached name that is not a plain hostname is dropped" {
-    printf '192.0.2.1\t#[bg=red]x\n192.0.2.2\tgood-name\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
-    printf '192.0.2.3\tbad;name\n' > "$SSHL_DIR_OVERRIDE/ignored.cache"
+    printf '192.0.2.1\t#[bg=red]x\n192.0.2.2\tgood-name\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    printf '192.0.2.3\tbad;name\n' > "$SSHL_DATA_DIR_OVERRIDE/ignored.cache"
     read_cache
     read_ignored
     [ "${#ips[@]}" = "2" ]

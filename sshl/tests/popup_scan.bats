@@ -5,12 +5,12 @@ load test_helper
 # Run popup-scan.sh in a new tmux window. Returns the pane ID.
 start_popup() {
     tmux -L "$SOCKET" new-window -P -F '#{pane_id}' \
-        "env SSHL_DIR_OVERRIDE='$SSHL_DIR_OVERRIDE' SSHL_SOCKET_OVERRIDE='$SOCKET' PATH='$TEST_BIN:$PATH' bash '$SSHL_SRC/popup-scan.sh'"
+        "env SSHL_DATA_DIR_OVERRIDE='$SSHL_DATA_DIR_OVERRIDE' SSHL_SOCKET_OVERRIDE='$SOCKET' PATH='$TEST_BIN:$PATH' bash '$SSHL_SRC/popup-scan.sh'"
 }
 
 # Build a session with one host (192.0.2.1) as the baseline for popup tests.
 build_one_host_session() {
-    printf '192.0.2.1\tfake-host-01\n' > "$SSHL_DIR_OVERRIDE/ips.cache"
+    printf '192.0.2.1\tfake-host-01\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     build_session
 }
@@ -22,7 +22,7 @@ build_one_host_session() {
     # shellcheck disable=SC2034  # passed to apply_scan_diff by name
     local to_add=("192.0.2.1") to_remove=()
     apply_scan_diff to_add to_remove
-    [ "$(cat "$SSHL_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tfake-host-01' ]
+    [ "$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tfake-host-01' ]
 }
 
 @test "apply_scan_diff: a host whose window fails is reported and the rest are added" {
@@ -33,13 +33,14 @@ build_one_host_session() {
     discovered_name=(["192.0.2.2"]="fake-host-02" ["192.0.2.3"]="fake-host-03")
     # shellcheck disable=SC2034  # passed to apply_scan_diff by name
     local to_add=("192.0.2.2" "192.0.2.3") to_remove=()
-    apply_scan_diff to_add to_remove 2> "$SSHL_DIR_OVERRIDE/err.log"
-    [[ "$(cat "$SSHL_DIR_OVERRIDE/err.log")" == *"192.0.2.2 (fake-host-02)"* ]]
-    [[ "$(cat "$SSHL_DIR_OVERRIDE/err.log")" == *"Added 2, removed 0."* ]]
+    apply_scan_diff to_add to_remove 2> "$SSHL_DATA_DIR_OVERRIDE/err.log"
+    [[ "$(cat "$SSHL_DATA_DIR_OVERRIDE/err.log")" == *"192.0.2.2 (fake-host-02)"* ]]
+    [[ "$(cat "$SSHL_DATA_DIR_OVERRIDE/err.log")" == *"Added 2, removed 0."* ]]
     [ "$(live_order)" = "192.0.2.1 192.0.2.3 " ]
 }
 
 @test "popup_scan: toggling a NEW host adds it to cache and opens a window" {
+    require_popup_fzf
     build_one_host_session
 
     pane=$(start_popup)

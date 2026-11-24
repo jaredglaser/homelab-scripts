@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SSHL_BIN="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/$(basename "${BASH_SOURCE[0]}")"
-
 rebuild=false
 for arg in "$@"; do
     case "$arg" in
@@ -27,7 +25,9 @@ EOF
     esac
 done
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# readlink -f so a symlink to sshl (say in ~/bin) still finds the library.
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 read_cache
 read_ignored

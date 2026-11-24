@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-source "$(dirname "${BASH_SOURCE[0]}")/sshl-lib.sh"
+# shellcheck source=sshl/sshl-lib.sh
+source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 
 # Hand-rolled keyboard TUI. State machine: nav (cursor moves) and grab
 # (cursor + held item move together). On apply, rewrite ips.cache in
@@ -157,7 +158,6 @@ apply_reorder() {
         "${TMUX_CMD[@]}" move-window -r -t "=$session_name" 2>/dev/null || true
     fi
 
-    refresh_session_options
     if (( failed > 0 )); then
         echo "Reordered $moved window(s), $failed failed. Run 'sshl --rebuild' if the session looks wrong." >&2
         return 2
