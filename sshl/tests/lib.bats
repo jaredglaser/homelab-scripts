@@ -302,3 +302,23 @@ esac'
     [ -z "${discovered_name[192.0.2.1]:-}" ]
     [ "${discovered_name[192.0.2.2]}" = "pve2" ]
 }
+
+@test "resolve_remote_hostname: ssh gets keepalives and a 15s limit unless the override is a positive number" {
+    local real v
+    real="$(command -v timeout)"
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd ssh 'printf " %s " "$*" > "$SSHL_DIR_OVERRIDE/ssh.args"; echo pve'
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd timeout 'printf "%s\n" "${*:1:4}" >> "$SSHL_DIR_OVERRIDE/timeout.log"
+exec '"$real"' "$@"'
+    resolve_remote_hostname 192.0.2.1 > /dev/null
+    for v in 0 abc 3; do
+        SSHL_RESOLVE_TIMEOUT_OVERRIDE="$v" resolve_remote_hostname 192.0.2.1 > /dev/null
+    done
+    [ "$(cat "$SSHL_DIR_OVERRIDE/timeout.log")" = $'-k 5 15 ssh\n-k 5 15 ssh\n-k 5 15 ssh\n-k 5 3 ssh' ]
+    local args
+    args="$(cat "$SSHL_DIR_OVERRIDE/ssh.args")"
+    [[ "$args" == *" -o BatchMode=yes "* ]]
+    [[ "$args" == *" -o ServerAliveInterval=5 "* ]]
+    [[ "$args" == *" -o ServerAliveCountMax=3 "* ]]
+}

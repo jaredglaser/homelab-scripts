@@ -37,7 +37,7 @@ cat "$f"'
 teardown() {
     local refused="" pid
     if [[ -f "${KILL_PIDS:-}" ]]; then
-        while read -r pid; do kill "$pid" 2>/dev/null || true; done < "$KILL_PIDS"
+        while read -r pid; do kill -9 "$pid" 2>/dev/null || true; done < "$KILL_PIDS"
     fi
     [[ -s "${TMUX_GUARD_LOG:-}" ]] && refused="$(cat "$TMUX_GUARD_LOG")"
     sshl_teardown
