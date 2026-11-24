@@ -19,7 +19,6 @@
 # uses it. The hook passes no arguments.
 
 set -u
-export LC_ALL=C
 
 PKG="libpve-storage-perl"
 TAG="pve-zfs-L-patch"
@@ -58,19 +57,46 @@ read_fail() {
     fail "cannot read $FILE (grep exit $1). Check permissions and disk health."
 }
 
-COMMENT_RE='^[[:space:]]*#'
+# The send statement with flags $1, alone on its line apart from a trailing
+# comment, so a copy inside a comment never counts. Group 1 ends before the
+# closing quote, group 2 is the rest of the line.
+call_re() {
+    echo "^([[:space:]]*my [\$]cmd = [[]'zfs', 'send', '$1)'[]];([[:space:]]*(#.*)?)\$"
+}
 
-# grep exits 2 on a read error, 1 on no match. A whole-line comment does not
-# count as a match, so a commented-out copy is never taken for live code.
-has_pattern() {
-    local rc matches line
-    matches=$(grep -F -- "$1" "$FILE"); rc=$?
+has_call() {
+    local rc
+    grep -qE -- "$(call_re "$1")" "$FILE"; rc=$?
     [ "$rc" -le 1 ] || read_fail "$rc"
-    [ "$rc" -eq 1 ] && return 1
-    while IFS= read -r line; do
-        [[ $line =~ $COMMENT_RE ]] || return 0
-    done <<< "$matches"
-    return 1
+    [ "$rc" -eq 0 ]
+}
+
+SEND_RE="[\"']zfs[\"'][[:space:]]*,[[:space:]]*[\"']send[\"']"
+
+# Warns when the file has more send calls in list form, outside whole-line
+# comments, than the known patched statements. It cannot see a command built
+# some other way, such as qw(zfs send) or a string.
+check_send_count() {
+    local lines rc entry text total=0 known=0 others="" known_re
+    known_re="($(call_re -RpvUL))|($(call_re -RpvL))"
+    lines=$(grep -nE -- "$SEND_RE" "$FILE"); rc=$?
+    [ "$rc" -le 1 ] || read_fail "$rc"
+    while IFS= read -r entry; do
+        [ -n "$entry" ] || continue
+        text="${entry#*:}"
+        [[ $text =~ ^[[:space:]]*# ]] && continue
+        total=$((total + 1))
+        if [[ $text =~ $known_re ]]; then
+            known=$((known + 1))
+        else
+            others="${others:+$others, }${entry%%:*}"
+        fi
+    done <<< "$lines"
+    [ "$total" -gt "$known" ] || return 0
+    warn "$FILE has $total zfs send calls, the script knows $known. Others on line $others." \
+         "$@" \
+         "Upstream code may have changed. Manual review required." \
+         "Replication for >128K recordsize datasets may be broken."
 }
 
 ROOT=""
@@ -87,10 +113,10 @@ FILE="$ROOT/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm"
 BACKUP_DIR="$ROOT/var/backups/pve-zfs-L-patch"
 HOOK_FILE="$ROOT/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch"
 
-require grep sed cp cmp mkdir rm stat date dpkg-query
+require grep sed cp cmp mv mkdir rm stat date flock logger dpkg-query
 
-# Only stdout is read: dpkg prints warnings about unrelated packages on stderr with
-# exit 0, and those must not be read as this package's state.
+# dpkg prints warnings about unrelated packages on stderr with exit 0, and
+# those must not be read as this package's state.
 pkg_state=$(dpkg-query -W -f='${db:Status-Status}\n' "$PKG" 2>/dev/null); pkg_rc=$?
 
 case "$pkg_rc" in
@@ -136,45 +162,39 @@ if [ ! -f "$FILE" ]; then
     fail "$FILE is a $(stat -Lc %F "$FILE"), not a regular file."
 fi
 
-# The two reviewed upstream shapes. '-Rpv'] never matches inside '-RpvU'], so
-# the file content alone says which is present. libpve-storage-perl 9.1.3
-# added -U (--no-preserve-encryption).
-U_ORIGINAL="my \$cmd = ['zfs', 'send', '-RpvU']"
-U_TARGET="my \$cmd = ['zfs', 'send', '-RpvUL']"
-U_SED="s/my \$cmd = \['zfs', 'send', '-RpvU'\]/my \$cmd = ['zfs', 'send', '-RpvUL']/g"
-PLAIN_ORIGINAL="my \$cmd = ['zfs', 'send', '-Rpv']"
-PLAIN_TARGET="my \$cmd = ['zfs', 'send', '-RpvL']"
-PLAIN_SED="s/my \$cmd = \['zfs', 'send', '-Rpv'\]/my \$cmd = ['zfs', 'send', '-RpvL']/g"
+mkdir_err=$(mkdir -p "$BACKUP_DIR" 2>&1) || fail "cannot create $BACKUP_DIR: ${mkdir_err:-no error text}" \
+                                                 "It holds the backups and the lock. Nothing was changed."
 
+# The apt hook and a manual run can overlap, and the second would back up the
+# file the first has just patched.
+LOCK="$BACKUP_DIR/.lock"
+LOCK_WAIT=10
+{ exec 9>"$LOCK"; } 2>/dev/null || fail "cannot open $LOCK." "Nothing was changed."
+flock -w "$LOCK_WAIT" 9 || fail "another run has held $LOCK for ${LOCK_WAIT}s." \
+                              "Nothing was changed. Run the script again once the other run has finished."
+
+# The two reviewed upstream shapes. libpve-storage-perl 9.1.3 added -U
+# (--no-preserve-encryption).
 sed_args=()
-targets=()
-originals=()
-if has_pattern "$U_ORIGINAL"; then
-    sed_args+=(-e "/$COMMENT_RE/!$U_SED"); originals+=("$U_ORIGINAL"); targets+=("$U_TARGET")
-fi
-if has_pattern "$PLAIN_ORIGINAL"; then
-    sed_args+=(-e "/$COMMENT_RE/!$PLAIN_SED"); originals+=("$PLAIN_ORIGINAL"); targets+=("$PLAIN_TARGET")
-fi
+for flags in -RpvU -Rpv; do
+    has_call "$flags" && sed_args+=(-e "s/$(call_re "$flags")/\\1L'];\\2/")
+done
 
 if [ "${#sed_args[@]}" -eq 0 ]; then
-    if has_pattern "$U_TARGET" || has_pattern "$PLAIN_TARGET"; then
+    if has_call -RpvUL || has_call -RpvL; then
+        check_send_count
         echo "${prefix} ${GREEN}OK${RESET} - patch already present in $FILE (no changes needed)" >&2
         exit 0
     fi
     warn "$FILE does not contain expected pattern." \
          "Upstream code may have changed. Manual review required." \
-         "Searched for: $U_ORIGINAL" \
-         "Searched for: $PLAIN_ORIGINAL" \
+         "Searched for a line holding only: my \$cmd = ['zfs', 'send', '-RpvU'];" \
+         "Searched for a line holding only: my \$cmd = ['zfs', 'send', '-Rpv'];" \
          "Replication for >128K recordsize datasets may be broken."
 fi
 
-# Snapshot the file before touching it, because rollback depends on these backups.
-# Tool errors go into the first message line, the only one syslog records.
-mkdir_err=$(mkdir -p "$BACKUP_DIR" 2>&1) || fail "cannot create $BACKUP_DIR: ${mkdir_err:-no error text}" \
-                                                 "Refusing to patch $FILE without a backup."
-
 # A write that keeps failing (immutable file, read-only /usr) would otherwise
-# add an identical copy on every apt run. Names sort by timestamp in C locale.
+# add an identical copy on every apt run. The names sort by timestamp.
 newest=""
 for candidate in "$BACKUP_DIR"/ZFSPoolPlugin.pm.prepatch.*; do
     [ -f "$candidate" ] && newest="$candidate"
@@ -185,32 +205,36 @@ if [ -n "$newest" ] && cmp -s "$FILE" "$newest"; then
     echo "${prefix} reusing $backup, which already holds this exact content" >&2
 else
     backup="${BACKUP_DIR}/ZFSPoolPlugin.pm.prepatch.$(date +%Y%m%d-%H%M%S).$$"
-    # cp needs -L: -a implies --no-dereference, and the target can be a symlink.
-    if ! cp_err=$(cp -aL "$FILE" "$backup" 2>&1); then
-        rm -f "$backup"
+    # Under the final name only once complete, so a run killed mid-copy never
+    # leaves a truncated file that looks like a backup.
+    partial="$BACKUP_DIR/.partial"
+    # -L because the target can be a symlink, -a to keep mode and mtime.
+    if ! cp_err=$(cp -aL "$FILE" "$partial" 2>&1); then
+        rm -f "$partial"
         fail "backup to $backup failed: ${cp_err:-no error text}" \
              "Refusing to patch $FILE without a backup. Free space in $BACKUP_DIR or make it writable, then re-run."
     fi
-    if ! cmp -s "$FILE" "$backup"; then
-        rm -f "$backup"
+    if ! cmp -s "$FILE" "$partial"; then
+        rm -f "$partial"
         fail "backup $backup does not match $FILE after copying." \
              "Refusing to patch $FILE without a backup."
     fi
+    mv_err=$(mv "$partial" "$backup" 2>&1) || fail "backup to $backup failed: ${mv_err:-no error text}" \
+                                                   "Refusing to patch $FILE without a backup."
 fi
 
-# sed -i writes a temp file and renames it over the target, so a failed run
-# leaves the file as it was. --follow-symlinks resolves the symlink first.
-if ! sed_err=$(sed -i --follow-symlinks "${sed_args[@]}" "$FILE" 2>&1); then
+# --follow-symlinks, or sed -i replaces a symlinked target with a regular file.
+if ! sed_err=$(sed -i -E --follow-symlinks "${sed_args[@]}" "$FILE" 2>&1); then
     fail "sed could not patch $FILE: ${sed_err:-no error text}" \
          "$FILE is unchanged. Check that it is not immutable (lsattr) and that its filesystem is writable."
 fi
 
-for i in "${!originals[@]}"; do
-    if has_pattern "${originals[$i]}" || ! has_pattern "${targets[$i]}"; then
-        fail "$FILE is not correctly patched after sed." \
-             "Restore $backup and review manually."
-    fi
-done
+if has_call -RpvU || has_call -Rpv; then
+    fail "$FILE is not correctly patched after sed." \
+         "Restore $backup and review manually."
+fi
+
+check_send_count "The known send call was patched (backup: $backup)."
 
 echo "${prefix} ${YELLOW}APPLIED${RESET} - patched $FILE to add -L flag (backup: $backup)" >&2
 logger -p daemon.notice -t "$TAG" -- "patched $FILE to add -L flag (backup: $backup)" 2>/dev/null || true

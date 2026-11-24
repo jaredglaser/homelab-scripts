@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# mv that records each call's arguments in FAKE_MV_ARGS, one call per line,
+# then runs the real mv.
+printf '%s\n' "$*" >> "${FAKE_MV_ARGS:?}"
+exec /bin/mv "$@"

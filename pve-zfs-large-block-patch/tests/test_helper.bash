@@ -43,6 +43,15 @@ only_backup() {
     find "$BACKUPS" -maxdepth 1 -name 'ZFSPoolPlugin.pm.prepatch.*' 2>/dev/null | head -1
 }
 
+wait_for_lock_holder() {
+    local _
+    for _ in $(seq 100); do
+        flock -n "$BACKUPS/.lock" true || return 0
+        sleep 0.05
+    done
+    return 1
+}
+
 # A .bats file that needs more setup defines its own setup() that calls
 # common_setup first.
 setup() { common_setup; }

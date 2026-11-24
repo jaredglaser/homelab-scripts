@@ -14,6 +14,7 @@ NAME=pve-zfs-large-block-patch.sh
 BASE_URL="https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch"
 P="[pve-zfs-L-patch install]"
 TMP_FILES=()
+ARGS=("$@")
 trap 'rm -f "${TMP_FILES[@]}"' EXIT
 
 die() {
@@ -27,11 +28,14 @@ new_tmp() {
     TMP_FILES+=("$NEW_TMP")
 }
 
-# Everything runs from main, called on the last line, so a download cut off
-# halfway through runs nothing.
+# Everything runs from main, called alone on the last line, so a download cut
+# off anywhere, that line included, runs nothing.
 main() {
-    local here="$1" root="" action=install
-    shift
+    local here="" root="" action=install
+    # Called from the top level of a file, BASH_SOURCE holds this file twice.
+    # Piped, it holds one entry that names no file.
+    [ "${#BASH_SOURCE[@]}" -ge 2 ] && here=$(dirname "${BASH_SOURCE[0]}")
+    set -- "${ARGS[@]}"
     while [ $# -gt 0 ]; do
         case "$1" in
             --uninstall) action=uninstall; shift ;;
@@ -74,6 +78,7 @@ main() {
     [ "$(tail -n 1 "$src")" = "# end of $NAME" ] || die "$from is not a complete copy of $NAME. Nothing was changed."
     bash -n "$src" 2>/dev/null || die "$from is not a valid bash script. Nothing was changed."
     if [ -f "$script" ] && cmp -s "$src" "$script"; then
+        chmod 755 "$script" || die "cannot make $script executable."
         echo "$P script already up to date: $script" >&2
     else
         local verb=installed
@@ -98,23 +103,25 @@ main() {
         # .dpkg-tmp, so a write that fails partway never becomes a hook.
         new_tmp "$hook" .dpkg-tmp || die "cannot write to $(dirname "$hook")."
         { printf '%s\n' "$want" > "$NEW_TMP" && chmod 644 "$NEW_TMP" && mv -f "$NEW_TMP" "$hook"; } \
-            || die "cannot write $hook. The previous hook, if any, is unchanged."
+            || die "cannot write $hook. The script is installed at $script, but the apt hook is not, and the patch was not applied. The previous hook, if any, is unchanged."
         echo "$P apt hook $verb: $hook" >&2
     fi
 
     echo "$P running $script once now" >&2
+    local rc=0
     if [ -n "$root" ]; then
-        "$script" --root "$root"
+        "$script" --root "$root" || rc=$?
     else
-        "$script"
+        "$script" || rc=$?
     fi
-    exit $?
+    [ "$rc" -eq 0 ] || echo "$P the script and the apt hook are installed, but this first run ended with exit $rc. See its message above." >&2
+    exit "$rc"
 }
 
 hook_text() {
     cat <<EOF
 DPkg::Post-Invoke {
-    "$1 || case \$? in 126|127) logger -p daemon.err -t pve-zfs-L-patch -- '$1 could not run, so the -L patch was not checked. Run the installer again.' ;; esac; true";
+    "$1 || { rc=\$?; case \$rc in 126|127) logger -p daemon.err -t pve-zfs-L-patch -- '$1 could not run, so the -L patch was not checked. Run the installer again.' ;; *) [ \$rc -le 128 ] || logger -p daemon.err -t pve-zfs-L-patch -- '$1 was stopped by signal '\$((rc - 128))' and may not have finished.' ;; esac; }; true";
 };
 EOF
 }
@@ -122,11 +129,11 @@ EOF
 uninstall() {
     local script="$1" hook="$2" backups="$3" removed=0
     # Hook first, so no apt run can start a half-removed install.
-    if [ -e "$hook" ]; then
+    if [ -e "$hook" ] || [ -L "$hook" ]; then
         rm -f "$hook" || { echo "$P FAILED - cannot remove $hook." >&2; return 1; }
         echo "$P removed $hook" >&2; removed=1
     fi
-    if [ -e "$script" ]; then
+    if [ -e "$script" ] || [ -L "$script" ]; then
         rm -f "$script" || { echo "$P FAILED - cannot remove $script." >&2; return 1; }
         echo "$P removed $script" >&2; removed=1
     fi
@@ -138,5 +145,4 @@ uninstall() {
     return 0
 }
 
-# BASH_SOURCE is empty when bash reads the script from a pipe.
-main "$(if [ "${#BASH_SOURCE[@]}" -gt 0 ]; then dirname "${BASH_SOURCE[0]}"; fi)" "$@"
+main

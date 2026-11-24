@@ -6,7 +6,7 @@
 #   FAKE_PKG_STDERR - also print this on stderr, as dpkg does for warnings
 #   FAKE_PKG_RC     - 1 means dpkg has no record of the package, 2+ means the query broke
 #   FAKE_PKG_STATE  - the db:Status-Status value of a normal answer
-printf '%s\n' "$@" > "${FAKE_DPKG_QUERY_ARGS:-/dev/null}"
+printf '%s\n' "$@" >> "${FAKE_DPKG_QUERY_ARGS:-/dev/null}"
 [[ -n "${FAKE_PKG_STDERR:-}" ]] && printf '%s\n' "$FAKE_PKG_STDERR" >&2
 
 if [[ -n "${FAKE_PKG_RAW+set}" ]]; then

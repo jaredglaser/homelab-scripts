@@ -1,13 +1,13 @@
 # pve-zfs-large-block-patch
 
-Proxmox VE replicates ZFS datasets with `zfs send` but without `-L` (`--large-block`). This script adds `-L` to that call in `/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm`, and an apt hook runs it again after every package update, because each update of `libpve-storage-perl` puts the upstream file back. Before changing the file it saves a copy in `/var/backups/pve-zfs-L-patch/`.
+Proxmox VE replicates ZFS datasets with `zfs send` but without `-L` (`--large-block`). This script adds `-L` to that call in `/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm`, and an apt hook reruns it after every update, because each `libpve-storage-perl` update restores the upstream file. It backs the file up to `/var/backups/pve-zfs-L-patch/` first.
 
 > [!WARNING]
 > This patches a Proxmox-managed file. Read `pve-zfs-large-block-patch.sh` before installing it on a production node.
 
 ## Why -L matters
 
-Without `-L`, datasets with `recordsize` above 128K (1M is common for media storage) are sent in 128K pieces. Once a replication chain has been started with `-L`, every later incremental must use it too. So when an update reverts the patch, the next replication fails with:
+Without `-L`, datasets with `recordsize` above 128K (1M is common for media) are sent in 128K pieces. Once a replication chain has been started with `-L`, every later incremental must use it too. So when an update reverts the patch, the next replication fails with:
 
 ```
 cannot receive incremental stream: incremental send stream requires -L (--large-block), to match previous receive.
@@ -23,7 +23,7 @@ Run as root on each Proxmox node:
 curl -fsSL https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch/install.sh | bash
 ```
 
-This installs the script to `/usr/local/sbin/pve-zfs-large-block-patch.sh`, adds the apt hook `/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch`, and patches the file once. Run it again to update. It also replaces a script and hook set up by hand.
+This installs the script to `/usr/local/sbin/pve-zfs-large-block-patch.sh` and the apt hook to `/etc/apt/apt.conf.d/99-pve-zfs-large-block-patch`, then patches once. Run it again to update, also over a manual install.
 
 <details>
 <summary>Manual install</summary>
@@ -35,28 +35,28 @@ chmod +x /usr/local/sbin/pve-zfs-large-block-patch.sh
 
 cat > /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch <<'EOF'
 DPkg::Post-Invoke {
-    "/usr/local/sbin/pve-zfs-large-block-patch.sh || case $? in 126|127) logger -p daemon.err -t pve-zfs-L-patch -- '/usr/local/sbin/pve-zfs-large-block-patch.sh could not run, so the -L patch was not checked. Run the installer again.' ;; esac; true";
+    "/usr/local/sbin/pve-zfs-large-block-patch.sh || { rc=$?; case $rc in 126|127) logger -p daemon.err -t pve-zfs-L-patch -- '/usr/local/sbin/pve-zfs-large-block-patch.sh could not run, so the -L patch was not checked. Run the installer again.' ;; *) [ $rc -le 128 ] || logger -p daemon.err -t pve-zfs-L-patch -- '/usr/local/sbin/pve-zfs-large-block-patch.sh was stopped by signal '$((rc - 128))' and may not have finished.' ;; esac; }; true";
 };
 EOF
 
 /usr/local/sbin/pve-zfs-large-block-patch.sh
 ```
 
-The rest of the hook line logs a script that could not start, and ends with `true` so a failed patch does not make apt exit with an error after every package has already installed. apt's exit status says nothing about the patch. The log does.
+The hook logs a script that could not start or was killed, and ends with `true` so a failed patch does not fail apt after the packages are installed. Check the log, not apt's exit status.
 
 </details>
 
-No service restart is needed. Replication and migration start a new `pvesm export` process for each send, and it reads the patched file.
+No service restart is needed: Proxmox storage migration runs each send in a new `pvesm export` process, which loads the patched file.
 
 ## Check it works
 
-Run the script. It reports the current state and patches the file if needed:
+Run the script. It reports the state and patches if needed:
 
 ```bash
 /usr/local/sbin/pve-zfs-large-block-patch.sh
 ```
 
-To check that the hook re-patches after an update, reinstall the version you already have. The output should end with an `APPLIED` line:
+To check the hook, reinstall the installed version. The output should end with `APPLIED`:
 
 ```bash
 apt-get install --reinstall "libpve-storage-perl=$(dpkg-query -W -f='${Version}' libpve-storage-perl)"
@@ -70,7 +70,7 @@ Every re-patch and every failure is logged:
 journalctl -t pve-zfs-L-patch
 ```
 
-The hook only runs from apt. After `dpkg -i`, run the script by hand, or let the next apt run catch it. If the script is missing or not executable, apt shows a shell error and the hook logs that the script could not run.
+The hook only runs from apt. After `dpkg -i`, run the script by hand or let the next apt run catch it. If the script is missing, not executable or killed, apt shows a shell error and the hook logs it.
 
 ## Messages
 
@@ -79,10 +79,10 @@ The hook only runs from apt. After `dpkg -i`, run the script by hand, or let the
 | `OK` | Already patched. | Nothing. |
 | `APPLIED` | Patched now, backup named in the message. | Nothing. |
 | `NOT INSTALLED` | No `libpve-storage-perl` and no file. | If this node no longer runs Proxmox VE, uninstall. |
-| `WARNING` | Upstream changed the file in a way the script does not know. It changes nothing. | Replication of large-record datasets may be broken. Check this repository for an updated script before editing the file by hand. |
-| `FAILED` | Something stopped the patch: the message gives the cause, such as a full disk or a read-only file. | Fix the cause and run the script again. The file is unchanged unless the message names a backup to restore. |
+| `WARNING` | Upstream changed the send call, or added another one. A known call is still patched. | Large-record replication may be broken. Check here for an updated script before editing the file. |
+| `FAILED` | Something stopped the patch, such as a full disk or a read-only filesystem. The message gives the cause. | Fix it and rerun. The file is unchanged unless the message names a backup to restore. |
 
-`WARNING` and `FAILED` exit 1 and are logged at `daemon.err`. apt still succeeds, so check the log after updates.
+`WARNING` and `FAILED` exit 1 and are logged at `daemon.err`. `OK` and `APPLIED` mean the known call has `-L` and no other `'zfs', 'send'` list is in the file. A send command built another way, such as `qw(zfs send)` or a string, is not detected.
 
 ## Uninstall and restore
 
@@ -90,16 +90,16 @@ The hook only runs from apt. After `dpkg -i`, run the script by hand, or let the
 curl -fsSL https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch/install.sh | bash -s -- --uninstall
 ```
 
-This removes the hook first, then the script. The patched file and the backups stay. To put the upstream file back, reinstall the installed version:
+This removes the hook, then the script. The patched file and backups stay. To restore the upstream file, reinstall the installed version. Replication of datasets already sent with `-L` then fails, as described above:
 
 ```bash
 apt-get install --reinstall "libpve-storage-perl=$(dpkg-query -W -f='${Version}' libpve-storage-perl)"
 ```
 
-To restore one specific backup instead, remove the hook first, otherwise the next apt run patches the file again:
+To restore a backup instead, pick the newest. Backups are never deleted. Remove the hook first, or the next apt run patches again:
 
 ```bash
-rm /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch
+rm /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch   # only after a manual install
 cp /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp>.<pid> /usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm
 ```
 
@@ -109,7 +109,7 @@ cp /var/backups/pve-zfs-L-patch/ZFSPoolPlugin.pm.prepatch.<timestamp>.<pid> /usr
 ```bash
 rm /etc/apt/apt.conf.d/99-pve-zfs-large-block-patch
 rm /usr/local/sbin/pve-zfs-large-block-patch.sh
-rm -r /var/backups/pve-zfs-L-patch   # optional, once you no longer need the backups
+rm -r /var/backups/pve-zfs-L-patch   # optional
 ```
 
 </details>
