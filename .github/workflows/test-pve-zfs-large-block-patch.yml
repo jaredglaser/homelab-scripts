@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
@@ -19,14 +23,40 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y bats shellcheck
-      - name: Shellcheck the script, test stubs and e2e harness
+      - name: Shellcheck the scripts, test stubs and e2e harness
         run: |
           shellcheck pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh \
             pve-zfs-large-block-patch/install.sh \
             pve-zfs-large-block-patch/tests/bin/* \
             pve-zfs-large-block-patch/tests/stubs/* \
             pve-zfs-large-block-patch/tests/test_helper.bash \
+            pve-zfs-large-block-patch/tests/setup_suite.bash \
             pve-zfs-large-block-patch/tests/e2e/*.sh
           shellcheck -S warning pve-zfs-large-block-patch/tests/*.bats
-      - name: Run pve-zfs-large-block-patch tests
+      - name: Run the bats suite
         run: bats pve-zfs-large-block-patch/tests/
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: End-to-end check with this commit's installer
+        run: pve-zfs-large-block-patch/tests/e2e/run.sh
+      # raw.githubusercontent.com can serve the previous main for a few minutes.
+      - name: Wait until main's raw files match this commit
+        if: github.event_name == 'push'
+        run: |
+          base=https://raw.githubusercontent.com/jaredglaser/homelab-scripts/main/pve-zfs-large-block-patch
+          for _ in $(seq 20); do
+            if curl -fsSL "$base/install.sh" | cmp -s - pve-zfs-large-block-patch/install.sh &&
+               curl -fsSL "$base/pve-zfs-large-block-patch.sh" | cmp -s - pve-zfs-large-block-patch/pve-zfs-large-block-patch.sh; then
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "raw.githubusercontent.com still serves different files for main after 10 minutes" >&2
+          exit 1
+      - name: End-to-end check with the README's one-liner
+        if: github.event_name == 'push'
+        run: pve-zfs-large-block-patch/tests/e2e/run.sh --one-liner
