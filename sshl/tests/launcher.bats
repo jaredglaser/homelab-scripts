@@ -43,6 +43,57 @@ exec "$REAL_TMUX" -L "$SSHL_SOCKET_OVERRIDE-term" -f /dev/null new-session -d -s
     "env -u TMUX TERM=xterm-256color script -qfc $(printf "%q" "$cmd") /dev/null"'
 }
 
+@test "sshl: an unknown argument fails and names it" {
+    run "$SSHL_SRC/sshl" --bogus
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"Unknown argument: --bogus"* ]]
+    run session_exists
+    [ "$status" -ne 0 ]
+}
+
+@test "sshl: --help prints the usage and exits 0" {
+    run "$SSHL_SRC/sshl" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == Usage:* ]]
+    [[ "$output" == *"--rebuild"* ]]
+    [[ "$output" == *"prefix is Ctrl+b"* ]]
+    [[ "$output" == *"prefix r"* ]]
+    [[ "$output" == *"Config: $SSHL_DATA_DIR_OVERRIDE/config"* ]]
+}
+
+@test "sshl: --rebuild without a cache starts over with a scan" {
+    stub_fzf 'grep "^NEW"'
+    run env -u TMUX "$SSHL_SRC/sshl" --rebuild
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Scanning"* ]]
+    [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
+    session_is_healthy
+}
+
+@test "sshl: --rebuild without a cache, while the session runs, replaces it with a scan" {
+    printf '192.0.2.9\tgone-host\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    : > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    stub_fzf 'grep "^NEW"'
+    run env -u TMUX "$SSHL_SRC/sshl" --rebuild
+    [ "$status" -eq 0 ]
+    [ "$(live_order)" = "192.0.2.1 192.0.2.2 " ]
+    session_is_healthy
+}
+
+@test "sshl: --rebuild replaces a healthy session with one built from the cache" {
+    printf '192.0.2.1\tfake-host-01\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+    read_cache
+    build_session
+    tmux -L "$SOCKET" new-window -t "=$session_name:" -n stray "sleep 30"
+    seed_cache
+    run env -u TMUX "$SSHL_SRC/sshl" -R
+    [ "$status" -eq 0 ]
+    [ "$(tmux -L "$SOCKET" list-windows -t "=$session_name" -F '#{window_name}' | tr '\n' ' ')" = "fake-host-01 fake-host-02 " ]
+    session_is_healthy
+}
+
 @test "sshl: runs through a symlink" {
     seed_cache
     mkdir "$SSHL_DATA_DIR_OVERRIDE/bin"
