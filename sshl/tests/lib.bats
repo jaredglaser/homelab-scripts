@@ -47,9 +47,12 @@ build_with_marker_panes() {
 }
 
 @test "read_cache: returns empty arrays when cache file is absent" {
+    ips=(192.0.2.1)
+    cached_name[192.0.2.1]=stale
     rm -f "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     [ "${#ips[@]}" = "0" ]
+    [ "${#cached_name[@]}" = "0" ]
 }
 
 @test "write_cache: roundtrips ip and name through read_cache" {
@@ -199,23 +202,23 @@ EOF
     [[ "$args" == *" --open "* ]]
 }
 
-@test "read_cache: succeeds when the last line has no name" {
-    printf '192.0.2.51\thost-b\n192.0.2.50\t\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
+@test "read_cache: reads a last line with no name and no newline" {
+    printf '192.0.2.51\thost-b\n192.0.2.50' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     read_cache
     [ "${#ips[@]}" = "2" ]
     [ "${ips[1]}" = "192.0.2.50" ]
     [ -z "${cached_name[192.0.2.50]:-}" ]
 }
 
-@test "read_ignored: succeeds when the last line has no name" {
-    printf '192.0.2.9\told-host\n192.0.2.10\t\n' > "$SSHL_DATA_DIR_OVERRIDE/ignored.cache"
+@test "read_ignored: reads a last line with no name and no newline" {
+    printf '192.0.2.9\told-host\n192.0.2.10' > "$SSHL_DATA_DIR_OVERRIDE/ignored.cache"
     read_ignored
     [ "${#ignored_ips[@]}" = "2" ]
     [ "${ignored_ips[1]}" = "192.0.2.10" ]
 }
 
 # The writers stage into "<file>.tmp.$$". Pointing that path at /dev/full
-# makes every write fail with ENOSPC, which chmod cannot do for root.
+# makes every write fail with ENOSPC.
 @test "write_cache: a failed write returns non-zero and keeps the old cache" {
     printf '192.0.2.1\tfake-host-01\n192.0.2.2\tfake-host-02\n' > "$SSHL_DATA_DIR_OVERRIDE/ips.cache"
     before=$(cat "$SSHL_DATA_DIR_OVERRIDE/ips.cache")
