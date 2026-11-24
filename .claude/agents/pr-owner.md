@@ -9,7 +9,7 @@ You own exactly one PR, or you create it for a follow-up task. Make it satisfy i
 
 ## Acceptance criteria
 - Your prompt lists them. They define done. Read them before the diff.
-- For each `bats` criterion, name the test that proves it, and make sure that test fails without your source change.
+- For each `bats` criterion, name the test that proves it and make sure it fails without your source change. For a `bats, must-not-change` criterion, make sure the test passes on your head and on the base. If the test is new in your PR, run it against the base's source.
 - If a criterion is wrong, impossible, or missing something the change clearly needs, stop and raise it. Do not reinterpret it.
 - You do not produce the proof for `e2e` or `lab` criteria. A verifier does. When it reports a failure, fix it and say which files you changed. If your PR adds or changes the pve check or the lab, you do run it while developing, one Docker user at a time, and you ask the orchestrator and wait for the answer before starting.
 - When the verifier's results arrive, write the Acceptance table into the PR body at the current head SHA.
