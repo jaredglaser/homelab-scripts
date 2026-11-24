@@ -198,11 +198,11 @@ if (( ${#terminal_cmd[@]} == 0 )); then
     exit 1
 fi
 
-# A value that already ends in the option before the command is used as written.
+# A value that already ends in an option is used as written.
 # shellcheck disable=SC2034  # the launcher reads terminal_exec
 case "${terminal_cmd[${#terminal_cmd[@]}-1]}" in
-    -e|-x|--) terminal_exec=() ;;
-    *)        terminal_exec=(-e) ;;
+    -*) terminal_exec=() ;;
+    *)  terminal_exec=(-e) ;;
 esac
 
 require tmux

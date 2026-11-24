@@ -143,13 +143,16 @@ install_arg_logger() {
     stub_cmd "$1" 'printf "%s\n" "$@" > "$SSHL_DATA_DIR_OVERRIDE/term.log"'
 }
 
-@test "sshl: a terminal value that ends in the option before the command is used as written" {
+@test "sshl: a terminal value that ends in an option is used as written" {
     seed_cache
     install_arg_logger fake-term
-    set_config terminal "fake-term start --"
-    run env -u TMUX "$SSHL_SRC/sshl"
-    [ "$status" -eq 0 ]
-    [ "$(head -n3 "$SSHL_DATA_DIR_OVERRIDE/term.log" | tr '\n' ' ')" = "start -- tmux " ]
+    local value
+    for value in "start --" "--command"; do
+        set_config terminal "fake-term $value"
+        run env -u TMUX "$SSHL_SRC/sshl"
+        [ "$status" -eq 0 ]
+        [[ "$(head -n3 "$SSHL_DATA_DIR_OVERRIDE/term.log" | tr '\n' ' ')" == "$value tmux "* ]]
+    done
 }
 
 @test "sshl: a missing ssh is reported before the session is built" {
