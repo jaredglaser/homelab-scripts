@@ -27,8 +27,15 @@ trim() {
 # Names from SSH, reverse DNS and the cache are untrusted: they become
 # tmux window names (where #[...] is expanded) and fill {hostname} in the
 # pane command templates. A leading hyphen would read as an option there.
+# A name of only digits and dots would pass for another host's IP.
 valid_hostname() {
-    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]
+    [[ ${#1} -le 63 && "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ && ! "$1" =~ ^[0-9.]+$ ]]
+}
+
+# The IP fills {ip} in the pane command templates and the quoted
+# #{@host_ip} in homelab.tmux.conf, so it gets the shape host-info.sh requires.
+valid_ip() {
+    [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9.:_-]*$ ]]
 }
 
 require() {
@@ -112,11 +119,16 @@ read_cache() {
     # Explicit `return 0`: bare `return` propagates the [[ -f ]] exit
     # status, which would trip set -e in callers when the file is absent.
     [[ -f "$CACHE_FILE" ]] || return 0
-    local c_ip c_name
+    local c_ip c_name line=0
     while IFS=$'\t' read -r c_ip c_name || [[ -n "$c_ip" ]]; do
+        line=$((line + 1))
         c_ip="$(trim "${c_ip%%#*}")"
         c_name="$(trim "$c_name")"
         [[ -z "$c_ip" ]] && continue
+        if ! valid_ip "$c_ip"; then
+            echo "Warning: skipping line $line of $CACHE_FILE: not an IP address" >&2
+            continue
+        fi
         ips+=("$c_ip")
         if valid_hostname "$c_name"; then cached_name["$c_ip"]="$c_name"; fi
     done < "$CACHE_FILE"
@@ -126,11 +138,16 @@ read_ignored() {
     ignored_ips=()
     ignored_name=()
     [[ -f "$IGNORED_FILE" ]] || return 0
-    local c_ip c_name
+    local c_ip c_name line=0
     while IFS=$'\t' read -r c_ip c_name || [[ -n "$c_ip" ]]; do
+        line=$((line + 1))
         c_ip="$(trim "${c_ip%%#*}")"
         c_name="$(trim "$c_name")"
         [[ -z "$c_ip" ]] && continue
+        if ! valid_ip "$c_ip"; then
+            echo "Warning: skipping line $line of $IGNORED_FILE: not an IP address" >&2
+            continue
+        fi
         ignored_ips+=("$c_ip")
         # shellcheck disable=SC2034  # write_ignored reads it through a nameref
         if valid_hostname "$c_name"; then ignored_name["$c_ip"]="$c_name"; fi
@@ -180,8 +197,13 @@ resolve_remote_hostname() {
     # because this runs in a background subshell during scan_subnet.
     # A host that neither this nor reverse DNS can name is still listed,
     # and its window is named by its IP.
-    name=$(ssh -o BatchMode=yes \
+    local limit="${SSHL_RESOLVE_TIMEOUT_OVERRIDE:-}"
+    [[ "$limit" =~ ^[1-9][0-9]{0,5}$ ]] || limit=15
+    # Without the limit, a host that stalls after login holds up the whole scan.
+    name=$(timeout -k 5 "$limit" ssh -o BatchMode=yes \
                -o ConnectTimeout=3 \
+               -o ServerAliveInterval=5 \
+               -o ServerAliveCountMax=3 \
                -o StrictHostKeyChecking=accept-new \
                -o LogLevel=ERROR \
                "$user@$ip" hostname -s 2>/dev/null) || return 1

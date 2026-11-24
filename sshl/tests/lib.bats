@@ -2,6 +2,14 @@
 
 load test_helper
 
+# Each pane touches ran.<ip> after its name is used, so a test can wait for
+# every pane command to have run.
+build_with_marker_panes() {
+    # shellcheck disable=SC2034  # read by build_session in sshl-lib.sh
+    left_cmd="echo {hostname}; touch $SSHL_DIR_OVERRIDE/ran.{ip}; sleep 30"
+    build_session
+}
+
 @test "trim: strips leading whitespace" {
     result=$(trim "   hello")
     [ "$result" = "hello" ]
@@ -175,7 +183,7 @@ load test_helper
 @test "scan_subnet: a name from ssh that is not a plain hostname falls back to the IP" {
     # shellcheck disable=SC2016  # the payload is meant to stay literal
     stub_cmd ssh 'case "$*" in
-    *192.0.2.1*) echo "pve;touch\${IFS}INJECTED;#" ;;
+    *192.0.2.1*) echo "pve;touch\${IFS}$SSHL_DIR_OVERRIDE/INJECTED;#" ;;
     *) echo "#[bg=red]x" ;;
 esac'
     stub_cmd getent 'exit 2'
@@ -183,6 +191,43 @@ esac'
     [ -z "${discovered_name[192.0.2.1]:-}" ]
     [ -z "${discovered_name[192.0.2.2]:-}" ]
     [ "$(resolve_hostname 192.0.2.1)" = "192.0.2.1" ]
+    ips=("${discovered_ips[@]}")
+    build_with_marker_panes
+    wait_until 5 test -e "$SSHL_DIR_OVERRIDE/ran.192.0.2.1"
+    [ ! -e "$SSHL_DIR_OVERRIDE/INJECTED" ]
+}
+
+@test "read_cache and read_ignored: a line whose IP is not an address is skipped and never runs" {
+    {
+        printf '192.0.2.1;touch %s/ip-ran\tok\n' "$SSHL_DIR_OVERRIDE"
+        printf '$(touch %s/ip-ran2)\tok\n' "$SSHL_DIR_OVERRIDE"
+        printf '192.0.2.2\tpve;touch %s/name-ran;#\n' "$SSHL_DIR_OVERRIDE"
+    } > "$SSHL_DIR_OVERRIDE/ips.cache"
+    printf "192.0.2.3'x\n" > "$SSHL_DIR_OVERRIDE/ignored.cache"
+    run read_cache
+    [[ "$output" == *"skipping line 1 of $SSHL_DIR_OVERRIDE/ips.cache"* ]]
+    [[ "$output" == *"skipping line 2 of $SSHL_DIR_OVERRIDE/ips.cache"* ]]
+    read_cache 2>/dev/null
+    read_ignored 2>/dev/null
+    [ "${ips[*]}" = "192.0.2.2" ]
+    [ "${#ignored_ips[@]}" = "0" ]
+    build_with_marker_panes
+    wait_until 5 test -e "$SSHL_DIR_OVERRIDE/ran.192.0.2.2"
+    [ "$(live_order)" = "192.0.2.2 " ]
+    [ ! -e "$SSHL_DIR_OVERRIDE/ip-ran" ]
+    [ ! -e "$SSHL_DIR_OVERRIDE/ip-ran2" ]
+    [ ! -e "$SSHL_DIR_OVERRIDE/name-ran" ]
+}
+
+@test "valid_hostname: accepts plain names and rejects the rest" {
+    local n long
+    long="$(printf 'a%.0s' $(seq 1 64))"
+    for n in pve host-01 a.b_c 1host "${long:1}"; do
+        valid_hostname "$n" || { echo "rejected $n" >&2; return 1; }
+    done
+    for n in "" -x "#[x]" "a;b" "a b" "$long" 192.168.1.10 10.0.0 1; do
+        if valid_hostname "$n"; then echo "accepted '$n'" >&2; return 1; fi
+    done
 }
 
 @test "scan_subnet: a reverse DNS name that is not a plain hostname is dropped" {
@@ -232,9 +277,28 @@ esac'
 }
 
 @test "scan_subnet: a host whose name comes with a banner is shown by its IP" {
-    stub_cmd ssh 'printf "Welcome\npve\n"'
+    stub_cmd ssh 'case "$*" in
+    *192.0.2.1*) printf "Welcome\npve\n" ;;
+    *) printf "pve2\n" ;;
+esac'
     stub_cmd getent 'exit 2'
     scan_subnet
     [ -z "${discovered_name[192.0.2.1]:-}" ]
     [ "$(resolve_hostname 192.0.2.1)" = "192.0.2.1" ]
+    [ "${discovered_name[192.0.2.2]}" = "pve2" ]
+}
+
+@test "scan_subnet: a host that stalls after login is shown by its IP and the scan ends" {
+    export SSHL_RESOLVE_TIMEOUT_OVERRIDE=1
+    stub_cmd ssh 'case "$*" in
+    *192.0.2.1*) exec sleep 30 ;;
+    *) printf "pve2\n" ;;
+esac'
+    stub_cmd getent 'exit 2'
+    local start=$SECONDS
+    scan_subnet
+    (( SECONDS - start < 10 ))
+    [ "${discovered_ips[*]}" = "192.0.2.1 192.0.2.2" ]
+    [ -z "${discovered_name[192.0.2.1]:-}" ]
+    [ "${discovered_name[192.0.2.2]}" = "pve2" ]
 }
