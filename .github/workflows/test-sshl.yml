@@ -5,18 +5,51 @@ on:
   push:
     branches: [main]
     paths: ['sshl/**', '.github/workflows/test-sshl.yml']
+  # No paths filter: a required check that never starts blocks the merge.
+  # sshl-changes decides instead, and a job skipped by its if reports success.
   pull_request:
-    paths: ['sshl/**', '.github/workflows/test-sshl.yml']
 
 permissions:
   contents: read
 
 jobs:
-  test:
+  sshl-changes:
+    name: sshl changes
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sshl: ${{ steps.diff.outputs.sshl }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        if: github.event_name == 'pull_request'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - id: diff
+        shell: bash
+        # The pull_request checkout is the merge commit, so its first parent is the base.
+        run: |
+          if [[ "$GITHUB_EVENT_NAME" != pull_request ]]; then
+            echo "sshl=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          changed="$(git diff --name-only HEAD^1 HEAD)"
+          if grep -qE '^(sshl/|\.github/workflows/test-sshl\.yml$)' <<<"$changed"; then
+            echo "sshl=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "sshl=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  sshl-tests:
+    name: sshl tests
+    needs: sshl-changes
+    if: needs.sshl-changes.outputs.sshl == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
       - name: Install dependencies
         run: |
           sudo apt-get update
