@@ -73,4 +73,4 @@ popup_ignored() {
     sleep 1.2
 }
 
-[[ "${BASH_SOURCE[0]}" == "${0}" ]] && popup_ignored
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then popup_ignored; fi

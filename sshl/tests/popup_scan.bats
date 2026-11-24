@@ -15,6 +15,30 @@ build_one_host_session() {
     build_session
 }
 
+@test "apply_scan_diff: returns 0 when no session exists yet (first run)" {
+    source "$SSHL_SRC/popup-scan.sh"
+    # shellcheck disable=SC2034,SC2079  # an associative array read by apply_scan_diff
+    discovered_name=(["192.0.2.1"]="fake-host-01")
+    # shellcheck disable=SC2034  # passed to apply_scan_diff by name
+    local to_add=("192.0.2.1") to_remove=()
+    apply_scan_diff to_add to_remove
+    [ "$(cat "$SSHL_DIR_OVERRIDE/ips.cache")" = $'192.0.2.1\tfake-host-01' ]
+}
+
+@test "apply_scan_diff: a host whose window fails is reported and the rest are added" {
+    build_one_host_session
+    source "$SSHL_SRC/popup-scan.sh"
+    fail_split_for_host 192.0.2.2
+    # shellcheck disable=SC2034,SC2079  # an associative array read by apply_scan_diff
+    discovered_name=(["192.0.2.2"]="fake-host-02" ["192.0.2.3"]="fake-host-03")
+    # shellcheck disable=SC2034  # passed to apply_scan_diff by name
+    local to_add=("192.0.2.2" "192.0.2.3") to_remove=()
+    apply_scan_diff to_add to_remove 2> "$SSHL_DIR_OVERRIDE/err.log"
+    [[ "$(cat "$SSHL_DIR_OVERRIDE/err.log")" == *"192.0.2.2 (fake-host-02)"* ]]
+    [[ "$(cat "$SSHL_DIR_OVERRIDE/err.log")" == *"Added 2, removed 0."* ]]
+    [ "$(live_order)" = "192.0.2.1 192.0.2.3 " ]
+}
+
 @test "popup_scan: toggling a NEW host adds it to cache and opens a window" {
     build_one_host_session
 
