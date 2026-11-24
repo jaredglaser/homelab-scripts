@@ -81,29 +81,15 @@ wait_for_pane_content() {
     return 1
 }
 
-# Wait for a pane to disappear (its process exited and tmux removed it).
-wait_for_pane_gone() {
-    local pane="$1" timeout="${2:-10}"
-    local _
-    for _ in $(seq 1 $(( timeout * 10 ))); do
-        tmux -L "$SOCKET" list-panes -a -F '#{pane_id}' 2>/dev/null | grep -qxF "$pane" || return 0
-        sleep 0.1
-    done
-    echo "Timeout waiting for pane $pane to disappear" >&2
-    return 1
-}
-
-# Poll window count for session_name until it matches expected, or timeout.
-wait_for_window_count() {
-    local expected="$1" timeout="${2:-10}"
-    local _ count
-    for _ in $(seq 1 $(( timeout * 10 ))); do
-        count=$(tmux -L "$SOCKET" list-windows -t "=$session_name" 2>/dev/null | wc -l) || true
-        [[ "$count" -eq "$expected" ]] && return 0
-        sleep 0.1
-    done
-    echo "Timeout waiting for window count: expected $expected, got $count" >&2
-    return 1
+# Run one of the popup scripts in a new window of the session and print
+# the pane ID. The window stays after the script ends and shows its exit
+# status: remain-on-exit failed sometimes keeps a pane whose program
+# exited 0 with no status, so waiting for the pane to close is flaky.
+start_popup_window() {
+    local pane
+    pane=$(tmux -L "$SOCKET" new-window -P -F '#{pane_id}' \
+        "env SSHL_DATA_DIR_OVERRIDE='$SSHL_DATA_DIR_OVERRIDE' SSHL_SOCKET_OVERRIDE='$SOCKET' PATH='$PATH' bash '$SSHL_SRC/$1'; echo popup-exit=\$?; exec sleep 60")
+    printf '%s\n' "$pane"
 }
 
 wait_for_popup_exit() {

@@ -19,12 +19,12 @@ popup_reorder() {
     local cursor=0
     local grabbed=0
 
-    # ANSI helpers. tput hides/shows cursor and uses smcup/rmcup to
-    # save+restore the terminal state so the popup vanishes cleanly.
+    # tput smcup/rmcup save and restore the terminal so the list vanishes
+    # cleanly, and civis/cnorm hide and show the cursor.
     tput smcup 2>/dev/null || true
     tput civis 2>/dev/null || true
     # Restore terminal on any exit, including ctrl-c.
-    trap 'tput cnorm 2>/dev/null || true; tput rmcup 2>/dev/null || true' EXIT
+    trap 'rc=$?; _reorder_restore_term; popup_exit_hint "$rc"' EXIT
 
     local result=cancelled
     while true; do
@@ -87,23 +87,22 @@ popup_reorder() {
         esac
     done
 
-    tput cnorm 2>/dev/null || true
-    tput rmcup 2>/dev/null || true
+    _reorder_restore_term
     trap - EXIT
+    if [[ -n "${SSHL_POPUP:-}" ]]; then trap 'popup_exit_hint $?' EXIT; fi
 
     if [[ "$result" != "apply" ]]; then
         echo "Reorder cancelled." >&2
         return 0
     fi
 
-    local rc=0
-    apply_reorder "${items[@]}" || rc=$?
-    if (( rc == 0 )); then
-        sleep 1.2
-        return 0
-    fi
-    sleep 2.5
-    if (( rc == 1 )); then return 1; fi
+    apply_reorder "${items[@]}" || return 1
+    sleep 1.2
+}
+
+_reorder_restore_term() {
+    tput cnorm 2>/dev/null || true
+    tput rmcup 2>/dev/null || true
 }
 
 # Rewrites ips.cache in the given order, then swaps the live windows to

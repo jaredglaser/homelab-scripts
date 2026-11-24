@@ -17,6 +17,15 @@ IGNORED_FILE="${SSHL_DATA_DIR}/ignored.cache"
 SOCKET="${SSHL_SOCKET_OVERRIDE:-homelab}"
 TMUX_CMD=(tmux -L "$SOCKET")
 
+# The popup bindings set SSHL_POPUP. display-popup -EE keeps a popup open
+# when its command fails, and nothing else in it says how to close it.
+popup_exit_hint() {
+    if (( $1 != 0 )) && [[ -n "${SSHL_POPUP:-}" ]]; then
+        echo "Press Esc to close this popup." >&2
+    fi
+}
+if [[ -n "${SSHL_POPUP:-}" ]]; then trap 'popup_exit_hint $?' EXIT; fi
+
 trim() {
     local v="$1"
     v="${v#"${v%%[![:space:]]*}"}"
@@ -61,6 +70,30 @@ require_fzf() {
         echo "Install a newer fzf from https://github.com/junegunn/fzf/releases" >&2
         exit 1
     fi
+}
+
+# Multi-select over stdin with the given prompt and header. Prints the
+# ticked rows. Returns 0 on accept, 1 when the user cancels or presses
+# Enter with nothing ticked, and 2 when fzf itself fails.
+multi_select() {
+    local prompt="$1" header="$2" rc=0
+    # fzf --multi accepts the highlighted row when nothing is ticked, so
+    # Enter and double-click accept only while something is. fzf runs the
+    # transform in $SHELL, and a login shell such as fish may not parse it.
+    # fzf's default marker is a thin bar, easy to miss next to a row.
+    # shellcheck disable=SC2016  # FZF_SELECT_COUNT is expanded by fzf's shell
+    SHELL="$BASH" fzf --multi --reverse --no-sort --height=100% \
+        --marker='+' \
+        --header="$header" --header-first \
+        --bind='space:toggle+down' \
+        --bind='enter:transform:[ "$FZF_SELECT_COUNT" -gt 0 ] && echo accept || echo abort' \
+        --bind='double-click:transform:[ "$FZF_SELECT_COUNT" -gt 0 ] && echo accept || echo abort' \
+        --prompt="$prompt" || rc=$?
+    case "$rc" in
+        0) return 0 ;;
+        1|130) return 1 ;;
+        *) echo "Error: fzf failed with exit status $rc." >&2; return 2 ;;
+    esac
 }
 
 if [[ ! -f "$CONFIG_FILE" ]]; then
@@ -373,6 +406,19 @@ substitute() {
     printf '%s' "$tmpl"
 }
 
+config_mtime() {
+    stat -c %Y "$CONFIG_FILE" 2>/dev/null || true
+}
+
+# Users, names and pane commands from the config only reach a window when
+# it is created, so an edit made after the build does not show until a
+# rebuild.
+config_changed_since_build() {
+    local built
+    built="$("${TMUX_CMD[@]}" show-option -gqv @config_mtime 2>/dev/null)" || return 1
+    [[ -n "$built" && "$built" != "$(config_mtime)" ]]
+}
+
 session_exists() {
     "${TMUX_CMD[@]}" has-session -t "=$session_name" 2>/dev/null
 }
@@ -409,7 +455,6 @@ set_session_options() {
 # tmux's global environment when they spawn.
 set_session_env() {
     "${TMUX_CMD[@]}" set-environment -g SSHL_DIR    "$SSHL_DIR"   2>/dev/null || true
-    "${TMUX_CMD[@]}" set-environment -g SSHL_CACHE  "$CACHE_FILE" 2>/dev/null || true
     "${TMUX_CMD[@]}" set-environment -g SSHL_PICKER "$PICKER"     2>/dev/null || true
 }
 
@@ -546,6 +591,7 @@ build_session() {
     # Set last so an aborted build leaves the marker unset. The next
     # session_is_healthy check then forces a clean rebuild.
     "${TMUX_CMD[@]}" set-option -g @build_complete 1
+    "${TMUX_CMD[@]}" set-option -g @config_mtime "$(config_mtime)"
 
     if (( ${#skipped[@]} > 0 )); then
         echo "Skipped ${#skipped[@]} host(s): $(format_host_list "${skipped[@]}"). Fix the cause above and run 'sshl --rebuild' to retry." >&2
