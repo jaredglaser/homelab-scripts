@@ -23,32 +23,15 @@ popup_ignored() {
     done
     fzf_input="${fzf_input%$'\n'}"
 
-    local header=$'space toggle • tab toggle+down • enter un-ignore • esc cancel\nticked entries return as scan candidates'
+    local header=$'space or tab tick and move down • enter un-ignore • esc cancel\nticked entries return as scan candidates'
 
-    # See popup_scan for the rationale: fzf --multi falls back to the
-    # focused line on Enter when nothing is marked. The flag file is
-    # touched by every selection-changing keybind, and Enter aborts to a
-    # no-op when the flag is absent.
-    local flag
-    flag=$(mktemp)
-    rm -f "$flag"
-    trap 'rm -f "$flag"' RETURN
-
-    local result
-    # shellcheck disable=SC2016  # SSHL_FLAG is expanded by the shell fzf runs
-    result=$(printf '%s\n' "$fzf_input" \
-        | SSHL_FLAG="$flag" fzf --multi --reverse --no-sort --height=100% \
-              --header="$header" --header-first \
-              --bind='space:execute-silent(touch "$SSHL_FLAG")+toggle+down' \
-              --bind='tab:execute-silent(touch "$SSHL_FLAG")+toggle+down' \
-              --bind='btab:execute-silent(touch "$SSHL_FLAG")+toggle+up' \
-              --bind='enter:transform([ -e "$SSHL_FLAG" ] && echo accept || echo abort)' \
-              --prompt='ignored> ') || {
+    local result rc=0
+    result=$(printf '%s\n' "$fzf_input" | multi_select 'ignored> ' "$header") || rc=$?
+    if (( rc == 1 )); then
         echo "No changes." >&2
         return 0
-    }
-
-    [[ -z "$result" ]] && { echo "Nothing selected." >&2; return 0; }
+    fi
+    (( rc == 0 )) || return 1
 
     local -A unignore=()
     local sip line
@@ -68,7 +51,6 @@ popup_ignored() {
     ignored_ips=("${new_ignored_ips[@]}")
     if ! write_ignored; then
         echo "Error: failed to write $IGNORED_FILE. No changes saved." >&2
-        sleep 2.5
         return 1
     fi
     echo "Un-ignored ${#unignore[@]} host(s)." >&2
