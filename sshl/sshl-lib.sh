@@ -133,7 +133,12 @@ while IFS= read -r line || [[ -n "$line" ]]; do
         terminal)      terminal="$value" ;;
         layout)        layout="$value" ;;
         host.*.user)       ip="${key#host.}"; host_user["${ip%.user}"]="$value" ;;
-        host.*.name)       ip="${key#host.}"; host_name["${ip%.name}"]="$value" ;;
+        host.*.name)
+            if ! valid_hostname "$value"; then
+                echo "Error: line $lineno of $CONFIG_FILE: $key '$value' is not a plain host name. Use letters, digits, '.', '_' and '-', start with a letter or digit, and keep it to 63 characters." >&2
+                exit 1
+            fi
+            ip="${key#host.}"; host_name["${ip%.name}"]="$value" ;;
         host.*.left_cmd)   ip="${key#host.}"; host_left_cmd["${ip%.left_cmd}"]="$value" ;;
         host.*.right_cmd)  ip="${key#host.}"; host_right_cmd["${ip%.right_cmd}"]="$value" ;;
         *) echo "Warning: line $lineno of $CONFIG_FILE has an unknown key '$key', ignoring it." >&2 ;;

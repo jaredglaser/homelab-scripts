@@ -370,6 +370,23 @@ esac'
     [[ "$output" == *"0 overrides"* ]]
 }
 
+@test "config: a host.<ip>.name that is not a plain host name is rejected at load, naming the line" {
+    local bad
+    for bad in "a b" 'web;touch x' '$(touch x)' "-web" "a#b" "1234" ""; do
+        sed -i '/^host\./d' "$SSHL_DATA_DIR_OVERRIDE/config"
+        printf 'host.192.0.2.5.name=%s\n' "$bad" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+        load_config 'echo loaded'
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"Error: line 7 of $SSHL_DATA_DIR_OVERRIDE/config: host.192.0.2.5.name '$bad' is not a plain host name."* ]]
+        [[ "$output" != *loaded* ]]
+    done
+    sed -i '/^host\./d' "$SSHL_DATA_DIR_OVERRIDE/config"
+    echo "host.192.0.2.5.name=web-01.lab" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo "${host_name[192.0.2.5]}"'
+    [ "$status" -eq 0 ]
+    [ "$output" = "web-01.lab" ]
+}
+
 @test "config: quotes around a whole value are dropped" {
     cat >> "$SSHL_DATA_DIR_OVERRIDE/config" << 'EOF2'
 subnet="10.0.0.0/24"
