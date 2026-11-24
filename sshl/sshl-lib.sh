@@ -140,10 +140,30 @@ while IFS= read -r line || [[ -n "$line" ]]; do
     esac
 done < "$CONFIG_FILE"
 
-if [[ -z "$subnet" ]]; then
+declare -ga subnets=()
+read -ra subnets <<<"${subnet//,/ }"
+if (( ${#subnets[@]} == 0 )); then
     echo "Error: 'subnet' is not set in $CONFIG_FILE. Set it to the network your hosts are on, in CIDR form such as subnet=192.168.1.0/24." >&2
     exit 1
 fi
+
+# Each entry reaches nmap as an argument, so one starting with - would be
+# read as an option, and nmap exits 0 on a target it cannot parse.
+valid_cidr() {
+    local octet
+    [[ "$1" =~ ^([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})\.([0-9]{1,3})/([0-9]{1,2})$ ]] || return 1
+    for octet in "${BASH_REMATCH[@]:1:4}"; do
+        (( 10#$octet <= 255 )) || return 1
+    done
+    (( 10#${BASH_REMATCH[5]} <= 32 ))
+}
+
+for entry in "${subnets[@]}"; do
+    if ! valid_cidr "$entry"; then
+        echo "Error: subnet '$entry' in $CONFIG_FILE is not a network in CIDR form. Use one or more ranges such as subnet=192.168.1.0/24 10.0.20.0/24." >&2
+        exit 1
+    fi
+done
 
 # An empty command gives a pane that exits at once, and an empty user an
 # ssh to "@ip". Both fail later with messages that do not name the key.
@@ -298,15 +318,12 @@ scan_subnet() {
     discovered_name=()
 
     echo "Scanning $subnet for live hosts..." >&2
-    local nmap_tmp nmap_err
-    local -a subnets
-    read -ra subnets <<<"${subnet//,/ }"
+    local nmap_tmp
     nmap_tmp="$(mktemp)"
-    nmap_err="$(mktemp)"
 
     # -oG to a file keeps the grepable records off stdout. The loop prints
     # the "Nmap scan report for" lines of the normal output as progress.
-    if ! nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "${subnets[@]}" -oG "$nmap_tmp" 2>"$nmap_err" \
+    if ! nmap -Pn -n -p 22 --open --min-parallelism 32 --max-rtt-timeout 50ms --max-retries 1 "${subnets[@]}" -oG "$nmap_tmp" \
         | {
             local current_prefix="" line ip prefix
             while IFS= read -r line; do
@@ -320,20 +337,10 @@ scan_subnet() {
                 echo "    $ip" >&2
             done
         }; then
-        cat "$nmap_err" >&2
-        rm -f "$nmap_tmp" "$nmap_err"
+        rm -f "$nmap_tmp"
         echo "Error: nmap failed to scan $subnet. Check the subnet in $CONFIG_FILE and nmap's message above." >&2
         return 1
     fi
-    cat "$nmap_err" >&2
-    # nmap exits 0 when it cannot parse its target, and scans nothing, or
-    # one host for a bad netmask, so the scan would report no hosts.
-    if grep -q -e 'No targets were specified' -e 'Illegal netmask' "$nmap_err"; then
-        rm -f "$nmap_tmp" "$nmap_err"
-        echo "Error: nmap could not read the subnet '$subnet'. Set subnet= in $CONFIG_FILE to one or more ranges in CIDR notation, such as 192.168.1.0/24 10.0.20.0/24." >&2
-        return 1
-    fi
-    rm -f "$nmap_err"
 
     local -a scanned=()
     local -A skip=()

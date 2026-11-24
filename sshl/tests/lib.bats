@@ -394,34 +394,39 @@ EOF2
     done
 }
 
-@test "scan_subnet: a subnet nmap cannot read fails and names the config key" {
-    # What nmap 7.94 prints for subnet=lan, and its exit status.
-    stub_cmd nmap 'echo "Starting Nmap 7.94SVN ( https://nmap.org )"
-echo "Failed to resolve \"lan\"." >&2
-echo "WARNING: No targets were specified, so 0 hosts scanned." >&2
-echo "Nmap done: 0 IP addresses (0 hosts up) scanned in 0.03 seconds"'
-    run scan_subnet
+@test "config: a subnet entry that is not a CIDR range is rejected at load, before any scan" {
+    local bad
+    for bad in "-oN $SSHL_DATA_DIR_OVERRIDE/x|-oN" "lan|lan" "10.1.0.0/66|10.1.0.0/66" \
+        "192.0.2.5|192.0.2.5" "192.0.2.0/24,300.0.0.0/8|300.0.0.0/8"; do
+        sed -i '/^subnet=/d' "$SSHL_DATA_DIR_OVERRIDE/config"
+        echo "subnet=${bad%|*}" >> "$SSHL_DATA_DIR_OVERRIDE/config"
+        load_config 'scan_subnet; echo scanned'
+        [ "$status" -eq 1 ]
+        [[ "$output" == *"Error: subnet '${bad#*|}' in $SSHL_DATA_DIR_OVERRIDE/config is not a network in CIDR form."* ]]
+        [[ "$output" != *scanned* ]]
+        [ ! -e "$SSHL_DATA_DIR_OVERRIDE/nmap.args" ]
+        [ ! -e "$SSHL_DATA_DIR_OVERRIDE/x" ]
+    done
+}
+
+@test "config: a subnet of only separators counts as not set" {
+    sed -i '/^subnet=/d' "$SSHL_DATA_DIR_OVERRIDE/config"
+    echo "subnet= , ," >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    load_config 'echo loaded'
     [ "$status" -eq 1 ]
-    [[ "$output" == *'Failed to resolve "lan".'* ]]
-    [[ "$output" == *"Error: nmap could not read the subnet '$subnet'. Set subnet= in $CONFIG_FILE to one or more ranges in CIDR notation"* ]]
-    [[ "$output" != *"No live hosts found"* ]]
+    [[ "$output" == *"'subnet' is not set in $SSHL_DATA_DIR_OVERRIDE/config"* ]]
 }
 
 @test "scan_subnet: several subnets, split on spaces or commas, each reach nmap as a target" {
-    # shellcheck disable=SC2016  # expanded by the stub, not here
-    stub_cmd nmap 'printf "%s\n" "$@" > "$SSHL_DATA_DIR_OVERRIDE/nmap.args"'
-    subnet="192.0.2.0/24  198.51.100.0/24,203.0.113.0/25"
-    scan_subnet 2>/dev/null
-    grep -qx '192.0.2.0/24' "$SSHL_DATA_DIR_OVERRIDE/nmap.args"
-    grep -qx '198.51.100.0/24' "$SSHL_DATA_DIR_OVERRIDE/nmap.args"
-    grep -qx '203.0.113.0/25' "$SSHL_DATA_DIR_OVERRIDE/nmap.args"
-}
-
-@test "scan_subnet: a netmask nmap rejects fails instead of scanning one host" {
-    stub_cmd nmap 'echo "Illegal netmask in \"10.1.0.0/66\". Assuming /32 (one host)" >&2'
-    run scan_subnet
-    [ "$status" -eq 1 ]
-    [[ "$output" == *"Error: nmap could not read the subnet"* ]]
+    sed -i '/^subnet=/d' "$SSHL_DATA_DIR_OVERRIDE/config"
+    printf 'subnet=192.0.2.0/24  198.51.100.0/24,203.0.113.0/25, # lab\r\n' >> "$SSHL_DATA_DIR_OVERRIDE/config"
+    stub_cmd ssh 'exit 255'
+    stub_cmd getent 'exit 2'
+    load_config 'scan_subnet 2>/dev/null'
+    [ "$status" -eq 0 ]
+    local args
+    args="$(sed -n '/^--max-retries$/,/^-oG$/p' "$SSHL_DATA_DIR_OVERRIDE/nmap.args" | tr '\n' ' ')"
+    [ "$args" = "--max-retries 1 192.0.2.0/24 198.51.100.0/24 203.0.113.0/25 -oG " ]
 }
 
 @test "resolve_remote_hostname: a banner beside the name is never joined into it" {
