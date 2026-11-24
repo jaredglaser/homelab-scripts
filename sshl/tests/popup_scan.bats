@@ -171,6 +171,13 @@ build_one_host_session() {
     [ ! -e "$SSHL_DATA_DIR_OVERRIDE/nmap.ran" ]
 }
 
+@test "require_popup_fzf: under CI an fzf too old for the popups fails the test" {
+    stub_fzf 'exit 0' 0.44.1
+    CI=true run require_popup_fzf
+    [ "$status" -eq 1 ]
+    [[ "$output" == *"cannot run on CI: the popups need fzf $SSHL_FZF_MIN or newer"*"found 0.44.1"* ]]
+}
+
 @test "popup_scan: a missing ssh is reported before the scan" {
     local pane
     pane=$(tmux -L "$SOCKET" new-session -d -P -F '#{pane_id}' -s probe \

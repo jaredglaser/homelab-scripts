@@ -55,14 +55,6 @@ fetch_done() {
         flock -n "$CACHE_DIR/$1.lock" true
 }
 
-# A skip reads as a pass, so CI fails a test it cannot set up.
-skip_unless_ci() {
-    if [[ -n "${CI:-}" ]]; then
-        echo "cannot run on CI: $1" >&2
-        return 1
-    fi
-    skip "$1"
-}
 wait_fetch_done() { wait_until 10 fetch_done "$1"; }
 
 start_test_server() {

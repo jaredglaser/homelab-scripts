@@ -60,12 +60,20 @@ no_host_info_running() {
     ! pgrep -f "$SSHL_SRC/host-info.sh" >/dev/null
 }
 
-# Skip a test that drives the real fzf when it is older than the popups need.
+# A skip reads as a pass, so CI fails a test it cannot set up.
+skip_unless_ci() {
+    if [[ -n "${CI:-}" ]]; then
+        echo "cannot run on CI: $1" >&2
+        return 1
+    fi
+    skip "$1"
+}
+
 require_popup_fzf() {
     local v
     v="$(fzf_version)"
     fzf_new_enough "$v" \
-        || skip "the popups need fzf $SSHL_FZF_MIN or newer (for FZF_SELECT_COUNT), found ${v:-none}"
+        || skip_unless_ci "the popups need fzf $SSHL_FZF_MIN or newer (for FZF_SELECT_COUNT), found ${v:-none}"
 }
 
 # Poll capture-pane until pattern appears or timeout expires.
