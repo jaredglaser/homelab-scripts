@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# cp that copies only the first 10 bytes of the source and still exits 0,
+# linked in by with_stub. No real failure does this on demand, and only the
+# script's content check after the copy catches it.
+head -c 10 "${@: -2:1}" > "${@: -1}"

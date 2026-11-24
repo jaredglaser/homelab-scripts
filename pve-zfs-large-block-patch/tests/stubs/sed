@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# sed that changes nothing and exits 0, linked in by with_stub, so only the
+# script's check after sed can catch an edit that did not happen.
+exit 0

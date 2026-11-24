@@ -1,36 +1,38 @@
-setup() {
-    PATCH_SRC="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
-    SCRIPT="$PATCH_SRC/pve-zfs-large-block-patch.sh"
-    FIXTURES="$(cd "$(dirname "${BATS_TEST_FILENAME}")" && pwd)/fixtures"
-    TEST_BIN="$(cd "$(dirname "${BATS_TEST_FILENAME}")" && pwd)/bin"
+# shellcheck shell=bash
+
+common_setup() {
+    TESTS_DIR="$(cd "$(dirname "${BATS_TEST_FILENAME}")" && pwd)"
+    SCRIPT="$(cd "$TESTS_DIR/.." && pwd)/pve-zfs-large-block-patch.sh"
+    FIXTURES="$TESTS_DIR/fixtures"
+    STUBS="$TESTS_DIR/stubs"
 
     PATCH_TMP="$(mktemp -d)"
-    # The script falls back to the real /usr/share/perl5 path when the overrides
-    # are empty, which is what an empty PATCH_TMP produces.
-    [ -d "$PATCH_TMP" ] || { echo "mktemp -d failed" >&2; return 1; }
-    mkdir -p "$PATCH_TMP/root"
+    ROOT="$PATCH_TMP/root"
+    FILE="$ROOT/usr/share/perl5/PVE/Storage/ZFSPoolPlugin.pm"
+    BACKUPS="$ROOT/var/backups/pve-zfs-L-patch"
+    mkdir -p "$(dirname "$FILE")" "$PATCH_TMP/bin"
 
-    export PVE_ZFS_PATCH_FILE_OVERRIDE="$PATCH_TMP/root/ZFSPoolPlugin.pm"
-    export PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE="$PATCH_TMP/backups"
-
-    export PATH="$TEST_BIN:$PATH"
+    export PATH="$PATCH_TMP/bin:$TESTS_DIR/bin:$PATH"
     export FAKE_PKG_STATE=installed
-    export FAKE_PKG_VER=9.1.5
     export FAKE_SYSLOG="$PATCH_TMP/syslog"
-    FILE="$PVE_ZFS_PATCH_FILE_OVERRIDE"
-    BACKUPS="$PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE"
+    export FAKE_DPKG_QUERY_ARGS="$PATCH_TMP/dpkg-query.args"
 }
 
-teardown() {
-    # Several tests chmod 000 or 500 to force failure paths, so rm -rf needs help.
-    chmod -R u+rwX "$PATCH_TMP" 2>/dev/null || true
+common_teardown() {
+    chmod -R u+rwX "$PATCH_TMP"
     rm -rf "$PATCH_TMP"
-    unset PVE_ZFS_PATCH_FILE_OVERRIDE PVE_ZFS_PATCH_BACKUP_DIR_OVERRIDE FAKE_SYSLOG \
-          FAKE_PKG_STATE FAKE_PKG_VER FAKE_PKG_RC FAKE_PKG_RAW
+}
+
+patch_run() {
+    run "$SCRIPT" --root "$ROOT" "$@"
 }
 
 seed() {
     cp "$FIXTURES/$1" "$FILE"
+}
+
+with_stub() {
+    ln -s "$STUBS/$1" "$PATCH_TMP/bin/$1"
 }
 
 backup_count() {
@@ -40,3 +42,17 @@ backup_count() {
 only_backup() {
     find "$BACKUPS" -maxdepth 1 -name 'ZFSPoolPlugin.pm.prepatch.*' 2>/dev/null | head -1
 }
+
+wait_for_lock_holder() {
+    local _
+    for _ in $(seq 100); do
+        flock -n "$BACKUPS/.lock" true || return 0
+        sleep 0.05
+    done
+    return 1
+}
+
+# A .bats file that needs more setup defines its own setup() that calls
+# common_setup first.
+setup() { common_setup; }
+teardown() { common_teardown; }
