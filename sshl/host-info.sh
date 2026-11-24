@@ -97,6 +97,9 @@ ttl=86400
 # A failed fetch retries after 5m instead of pinning the host as unknown
 # for the full 24h, without hammering a host that's genuinely down.
 unknown_ttl=300
+# ConnectTimeout covers only connecting. Without a cap, a host that freezes
+# after login holds the fetch, its lock and the spinner forever.
+fetch_timeout="${SSHL_FETCH_TIMEOUT_OVERRIDE:-120}"
 
 spinner_frame() {
     local f=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏)
@@ -159,8 +162,12 @@ parse_remote() {
 fetch() {
     local out tmp
     # 9>&- keeps an ssh ControlPersist master from holding the lock.
-    out=$(ssh -o BatchMode=yes \
+    # ServerAlive notices a host that stops answering within 15s, and
+    # timeout ends a remote command that never finishes.
+    out=$(timeout "$fetch_timeout" ssh -o BatchMode=yes \
               -o ConnectTimeout=2 \
+              -o ServerAliveInterval=5 \
+              -o ServerAliveCountMax=3 \
               -o StrictHostKeyChecking=accept-new \
               -o LogLevel=ERROR \
               "$user@$ip" "$remote" 2>/dev/null 9>&-) || out=""
