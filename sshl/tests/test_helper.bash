@@ -1,4 +1,12 @@
 setup() {
+    sshl_setup
+}
+
+teardown() {
+    sshl_teardown
+}
+
+sshl_setup() {
     SSHL_SRC="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
     TEST_BIN="$(cd "$(dirname "${BATS_TEST_FILENAME}")" && pwd)/bin"
 
@@ -23,7 +31,7 @@ EOF
     : > "$SSHL_DIR_OVERRIDE/ips.cache"
     : > "$SSHL_DIR_OVERRIDE/ignored.cache"
 
-    # Minimal host-info stub so fzf preview doesn't print errors
+    # The launcher's cache warm-up runs this instead of the real host-info.sh.
     printf '#!/usr/bin/env bash\necho "test"\n' > "$SSHL_DIR_OVERRIDE/host-info.sh"
     chmod +x "$SSHL_DIR_OVERRIDE/host-info.sh"
 
@@ -37,7 +45,7 @@ EOF
     # After sourcing: SOCKET=$SSHL_SOCKET_OVERRIDE, TMUX_CMD=(tmux -L "$SOCKET")
 }
 
-teardown() {
+sshl_teardown() {
     tmux -L "$SOCKET" kill-server 2>/dev/null || true
     rm -rf "$SSHL_DIR_OVERRIDE"
     unset SSHL_DIR_OVERRIDE SSHL_SOCKET_OVERRIDE
@@ -80,6 +88,41 @@ wait_for_window_count() {
     return 1
 }
 
+# Poll a command until it succeeds or timeout (seconds) expires.
+wait_until() {
+    local timeout="$1"; shift
+    local i
+    for i in $(seq 1 $(( timeout * 20 ))); do
+        "$@" && return 0
+        sleep 0.05
+    done
+    echo "Timeout waiting for: $*" >&2
+    return 1
+}
+
+# Shadow tmux with a shim that refuses the real homelab socket, and a bare
+# tmux call unless $TMUX points at this test's server. Refusals land in
+# $TMUX_GUARD_LOG so a test can assert there were none.
+install_tmux_guard() {
+    export TMUX_GUARD_LOG="$SSHL_DIR_OVERRIDE/tmux-guard.log" TEST_SOCKET="$SOCKET" REAL_TMUX
+    : > "$TMUX_GUARD_LOG"
+    cat > "$STUB_BIN/tmux" << 'EOF'
+#!/usr/bin/env bash
+args=" $* "
+if [[ "$args" == *" -L homelab "* ]]; then
+    echo "refused: tmux $*" >> "$TMUX_GUARD_LOG"
+    exit 1
+fi
+if [[ "$args" != *" -L "* && "$args" != *" -S "* && "${TMUX%%,*}" != */"$TEST_SOCKET" ]]; then
+    echo "refused: tmux $* with TMUX=${TMUX:-}" >> "$TMUX_GUARD_LOG"
+    exit 1
+fi
+exec "$REAL_TMUX" "$@"
+EOF
+    chmod +x "$STUB_BIN/tmux"
+    hash -r
+}
+
 # Write an executable stub that shadows a command for the current test only.
 stub_cmd() {
     local name="$1" body="$2"
@@ -101,8 +144,10 @@ exec '$REAL_TMUX' \"\$@\""
 
 # Attach a real client to session_name through a grouped session, the way
 # sshl's attach command does, and wait until tmux reports it attached.
+# An optional file receives everything the client draws.
 attach_grouped_client() {
-    TERM=xterm-256color script -qfc "tmux -L '$SOCKET' new-session -t '$session_name'" /dev/null \
+    local typescript="${1:-/dev/null}"
+    TERM=xterm-256color script -qfc "tmux -L '$SOCKET' new-session -t '$session_name'" "$typescript" \
         >/dev/null 2>&1 3>&- &
     local i
     for i in $(seq 1 100); do

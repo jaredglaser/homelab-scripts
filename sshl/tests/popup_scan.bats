@@ -144,3 +144,14 @@ build_one_host_session() {
     [ "$status" -ne 0 ]
     grep -q "192.0.2.2" "$SSHL_DIR_OVERRIDE/ips.cache"
 }
+
+@test "popup_scan: the host list has no preview, so browsing it logs in nowhere" {
+    # shellcheck disable=SC2016  # expanded by the stub, not here
+    stub_cmd fzf 'printf "%s\n" "$@" > "$SSHL_DIR_OVERRIDE/fzf.args"; cat > /dev/null; exit 130'
+    source "$SSHL_SRC/popup-scan.sh"
+    # A subshell, because the RETURN trap popup_scan sets outlives it.
+    ( popup_scan ) 2>/dev/null
+    grep -q -- '--multi' "$SSHL_DIR_OVERRIDE/fzf.args"
+    run grep -- '--preview' "$SSHL_DIR_OVERRIDE/fzf.args"
+    [ "$status" -ne 0 ]
+}

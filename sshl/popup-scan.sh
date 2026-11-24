@@ -58,11 +58,6 @@ popup_scan() {
     header=$'space toggle • tab toggle+down • enter apply • esc cancel\n'
     header+='tick CURRENT to remove (and ignore)  •  tick NEW to add  •  leave alone for no change'
 
-    # Preview pane: live host-info for the highlighted IP. {2} is the
-    # IP column. Errors absorbed so a slow host doesn't blank fzf.
-    local preview_cmd
-    preview_cmd="'$INFO_SCRIPT' '$default_user' {2} 2>&1 || true"
-
     # fzf --multi falls back to the focused line when Enter is pressed
     # with nothing marked, which silently ticks the first row. Every
     # selection-changing keybind touches a flag file. Enter only accepts
@@ -77,7 +72,6 @@ popup_scan() {
     result=$(printf '%s\n' "$fzf_input" \
         | SSHL_FLAG="$flag" fzf --multi --reverse --no-sort --height=100% \
               --header="$header" --header-first \
-              --preview="$preview_cmd" --preview-window=right:45%:wrap \
               --bind='space:execute-silent(touch "$SSHL_FLAG")+toggle+down' \
               --bind='tab:execute-silent(touch "$SSHL_FLAG")+toggle+down' \
               --bind='btab:execute-silent(touch "$SSHL_FLAG")+toggle+up' \

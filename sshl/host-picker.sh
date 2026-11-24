@@ -4,10 +4,18 @@
 set -euo pipefail
 
 cache="${TMUX_HOMELAB_CACHE:?TMUX_HOMELAB_CACHE not set}"
-socket="homelab"
+# The popup shell carries $TMUX for the sshl server, and a bare tmux
+# command follows it. Outside tmux, fall back to the sshl socket.
+if [[ -n "${SSHL_SOCKET_OVERRIDE:-}" ]]; then
+    tmux_cmd=(tmux -L "$SSHL_SOCKET_OVERRIDE")
+elif [[ -n "${TMUX:-}" ]]; then
+    tmux_cmd=(tmux)
+else
+    tmux_cmd=(tmux -L homelab)
+fi
 
 if ! command -v fzf &>/dev/null; then
-    tmux -L "$socket" display-message \
+    "${tmux_cmd[@]}" display-message \
         "fzf not installed. Install it to use the host picker."
     exit 0
 fi
@@ -28,11 +36,11 @@ display="${name:-$ip}"
 # Target the window by id resolved from @host_ip, not by name. Two
 # hosts with the same short hostname collide under name targeting
 # and tmux picks the first match.
-wid=$(tmux -L "$socket" list-windows -F '#{window_id} #{@host_ip}' 2>/dev/null \
+wid=$("${tmux_cmd[@]}" list-windows -F '#{window_id} #{@host_ip}' 2>/dev/null \
       | awk -v ip="$ip" '$2 == ip {print $1; exit}')
 
 if [[ -n "$wid" ]]; then
-    tmux -L "$socket" select-window -t "$wid"
+    "${tmux_cmd[@]}" select-window -t "$wid"
 else
-    tmux -L "$socket" display-message "Host '$display' not found. Use <prefix> S to rescan."
+    "${tmux_cmd[@]}" display-message "Host '$display' not found. Use <prefix> S to rescan."
 fi
