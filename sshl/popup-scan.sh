@@ -7,7 +7,7 @@ source "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/sshl-lib.sh"
 # Run nmap, present a multi-select fzf where each row carries an
 # explicit action tag: CURRENT (already a window) or NEW (just found).
 # Ticking acts on the row in the obvious way:
-#   tick CURRENT → kill window + add to ignored
+#   tick CURRENT → kill window, and ignore it if the scan found it
 #   tick NEW     → add window + cache it
 #   untouched    → no-op
 #
@@ -23,12 +23,15 @@ popup_scan() {
     read_cache
     read_ignored
     scan_subnet
+    refresh_cached_names
 
     local -A in_cache=()
     local -A in_ignored=()
+    local -A in_scan=()
     local ip
     for ip in "${ips[@]}";         do in_cache["$ip"]=1; done
     for ip in "${ignored_ips[@]}"; do in_ignored["$ip"]=1; done
+    for ip in "${discovered_ips[@]}"; do in_scan["$ip"]=1; done
 
     # Combined list: cache order first, then discovered newcomers.
     local -a entries=()
@@ -49,18 +52,23 @@ popup_scan() {
 
     # Padded tag so columns align and awk still sees one token per
     # field (whitespace-separated).
+    # A host that moved shows up twice, CURRENT at the old address and NEW
+    # at the new one, so say which one the scan no longer sees.
     local fzf_input="" name display_name tag
     for ip in "${entries[@]}"; do
         name="${host_name[$ip]:-${cached_name[$ip]:-${discovered_name[$ip]:-}}}"
         display_name="${name:--}"
         tag="${entry_tag[$ip]}"
+        if [[ "$tag" == CURRENT && -z "${in_scan[$ip]:-}" ]]; then
+            display_name+="  (not found by this scan)"
+        fi
         printf -v fzf_input '%s%-7s  %-15s  %s\n' "$fzf_input" "$tag" "$ip" "$display_name"
     done
     fzf_input="${fzf_input%$'\n'}"
 
     local header
     header=$'space or tab tick and move down • enter apply • esc cancel\n'
-    header+='tick CURRENT to remove (and ignore)  •  tick NEW to add  •  leave alone for no change'
+    header+='tick CURRENT to remove  •  tick NEW to add  •  leave alone for no change'
 
     local result rc=0
     result=$(printf '%s\n' "$fzf_input" | multi_select 'hosts> ' "$header") || rc=$?
@@ -106,6 +114,8 @@ apply_scan_diff() {
     fi
 
     local ip c
+    local -A found=()
+    for ip in "${discovered_ips[@]}"; do found["$ip"]=1; done
 
     # Mutate in-memory state to the target shape (cache mirror, no
     # live tmux yet).
@@ -113,9 +123,13 @@ apply_scan_diff() {
         local -a new_ips=()
         for c in "${ips[@]}"; do [[ "$c" != "$ip" ]] && new_ips+=("$c"); done
         ips=("${new_ips[@]}")
-        ignored_ips+=("$ip")
-        # shellcheck disable=SC2034  # write_ignored reads it through a nameref
-        ignored_name["$ip"]="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
+        # Only a host the scan still sees is ignored. One that is gone may
+        # come back as a new machine on the same IP, and should show as NEW.
+        if [[ -n "${found[$ip]:-}" ]]; then
+            ignored_ips+=("$ip")
+            # shellcheck disable=SC2034  # write_ignored reads it through a nameref
+            ignored_name["$ip"]="${cached_name[$ip]:-${discovered_name[$ip]:-}}"
+        fi
         unset 'cached_name[$ip]'
     done
     for ip in "${_to_add[@]}"; do
